@@ -1,0 +1,16 @@
+{
+  "name": "model-advisor",
+  "version": "0.1.0",
+  "description": "Reads each prompt you send and says which model and effort would do it, so you stop paying Opus at xhigh for a commit message.",
+  "author": { "name": "MC Mediavilla" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "mode": {
+      "type": "string",
+      "title": "Model advisor",
+      "description": "suggest: show what would do, change nothing. auto: also send a prompt on the cheaper setup when the advisor is sure and the switch pays for itself. off: say nothing.",
+      "default": "suggest",
+      "options": ["suggest", "auto", "off"]
+    }
+  }
+}

@@ -1,0 +1,241 @@
+import { atom, read, update } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
+
+import type { Assessment, Mode, SessionSetup, Setup } from '../types'
+import { advise, assess, effortOf, idFor, kTokens, midway, modelKeyOf, setupLabel, TIER_LABEL } from './assess'
+import type { Current } from './assess'
+import { midwayVerdict, verdict } from './words'
+
+const sent = atom({ plugin: 'model-advisor', key: 'sent' } as const, null)
+const draft = atom({ plugin: 'model-advisor', key: 'draft' } as const, null)
+const override = atom({ plugin: 'model-advisor', key: 'override' } as const, null)
+const session = atom({ plugin: 'model-advisor', key: 'session' } as const, null)
+const contextTokens = atom({ plugin: 'model-advisor', key: 'contextTokens' } as const, 0)
+const sessionMode = atom({ plugin: 'model-advisor', key: 'mode' } as const, null)
+const isHidden = atom({ plugin: 'model-advisor', key: 'isHidden' } as const, false)
+const run = atom({ plugin: 'model-advisor', key: 'run' } as const, { turnId: null, steps: 0 })
+
+/** Prompts a person wrote; a notification, a routine or a plugin's prompt is not judged. */
+const PEOPLE = new Set(['composer', 'bridge', 'sdk'])
+const MODES: readonly Mode[] = ['suggest', 'auto', 'off']
+
+type $ = EngineInterface
+
+async function modeOf($: $, configured: Mode): Promise<Mode> {
+  return (await read($, sessionMode)) ?? configured
+}
+
+/** What the session itself sends; null until a request or `/model` names a family the advisor prices. */
+async function ownOf($: $): Promise<Current | null> {
+  const own = await read($, session)
+  const model = own === null ? null : modelKeyOf(own.model)
+
+  return model === null || own === null ? null : { model, effort: own.effort }
+}
+
+/** What would be sent now: the advisor's override, else the session's own setup. */
+async function currentOf($: $): Promise<Current | null> {
+  const chosen = await read($, override)
+
+  return chosen === null ? ownOf($) : { model: chosen.model, effort: chosen.effort }
+}
+
+async function syncStatus($: $) {
+  const chosen = await read($, override)
+  $.ui.status(chosen === null ? undefined : `advisor: ${setupLabel(chosen.model, chosen.effort)}${chosen.by === 'auto' ? ' (auto)' : ''}`)
+}
+
+async function choose($: $, setup: Setup | null, by: 'you' | 'auto') {
+  await update($, override, () => (setup === null ? null : { ...setup, by }))
+  await syncStatus($)
+}
+
+/**
+ * Auto goes cheaper only when the reading is sure, the prompt says what the
+ * work is, and the rough saving beats the re-cache; anything else runs on
+ * the session's own setup. It never goes above it, and never undoes a
+ * choice you made yourself. A follow-on keeps whatever the last prompt ran on.
+ */
+async function autoChoose($: $, a: Assessment) {
+  const chosen = await read($, override)
+  if (chosen?.by === 'you' || a.isFollowOn) return
+  const own = await ownOf($)
+  if (own === null) return
+
+  const advice = advise(a, own, await read($, contextTokens))
+  const isThereAlready = chosen !== null && chosen.model === a.setup.model && chosen.effort === a.setup.effort
+  const isTaken = advice.kind === 'cheaper' && a.isSure && (isThereAlready || advice.isWorthIt)
+  if (isTaken ? isThereAlready : chosen === null) return
+  await choose($, isTaken ? a.setup : null, 'auto')
+}
+
+export const register: Register = (on, options) => {
+  const configured: Mode = MODES.includes(options.mode as Mode) ? (options.mode as Mode) : 'suggest'
+
+  on('session.start', async ($, e, next) => {
+    await $.command.register({
+      name: 'advise',
+      description: 'Model advisor: judge a prompt without sending it, or set suggest, auto, off, use, reset',
+      argumentHint: '[prompt | suggest | auto | off | use | reset]',
+    })
+
+    if ((await read($, session)) === null) {
+      const model = await $.session.model()
+      const rows = await $.config.list().catch(() => [])
+      const effort = effortOf(rows.find(row => /effort/i.test(row.key))?.value)
+      await update($, session, () => ({ model, effort }))
+    }
+    await syncStatus($)
+
+    return next(e)
+  })
+
+  on('prompt.edit', async ($, e, next) => {
+    const box = await next(e)
+    if ((await modeOf($, configured)) === 'off') return box
+
+    const text = box.text.trim()
+    const was = await read($, draft)
+    if (text.length === 0 || text.startsWith('/')) {
+      if (was !== null) await update($, draft, () => null)
+
+      return box
+    }
+
+    const a = assess(text, await read($, sent))
+    const isSame = was !== null && was.tier === a.tier && was.isFollowOn === a.isFollowOn && was.reasons.join() === a.reasons.join()
+    if (!isSame) await update($, draft, () => a)
+
+    return box
+  })
+
+  on('prompt.submit', async ($, e, next) => {
+    const mode = await modeOf($, configured)
+    if (mode === 'off' || !PEOPLE.has(e.origin.kind) || e.text.trim().startsWith('/')) return next(e)
+
+    const a = assess(e.text, await read($, sent))
+    await update($, sent, () => a)
+    await update($, draft, () => null)
+    await update($, isHidden, () => false)
+    await update($, run, () => ({ turnId: null, steps: 0 }))
+    if (mode === 'auto') await autoChoose($, a)
+
+    return next(e)
+  })
+
+  // The main loop's requests only: a subagent runs on the model its definition names.
+  on('turn.step', async function* ($, e, next) {
+    if (e.agentId !== undefined) return yield* next(e)
+
+    await update($, run, r => ({ turnId: e.turnId, steps: r.turnId === e.turnId ? r.steps + 1 : 1 }))
+
+    const own: SessionSetup = { model: e.model, effort: effortOf(e.effort) }
+    const was = await read($, session)
+    if (was === null || was.model !== own.model || was.effort !== own.effort) await update($, session, () => own)
+
+    const chosen = (await modeOf($, configured)) === 'off' ? null : await read($, override)
+    const result = yield* next(chosen === null ? e : { ...e, model: idFor(chosen.model, e.model), effort: chosen.effort })
+
+    const usage = result.usage
+    if (usage !== null) {
+      const tokens = usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0)
+      if (Math.abs(tokens - (await read($, contextTokens))) >= 1_000) await update($, contextTokens, () => tokens)
+    }
+
+    return result
+  })
+
+  on('command.run', { command: 'advise' }, async ($, e) => {
+    const arg = e.args.trim()
+    const word = arg.toLowerCase()
+
+    if (word === 'suggest' || word === 'auto' || word === 'off') {
+      await update($, sessionMode, () => word)
+      if (word === 'off') await choose($, null, 'you')
+
+      return { text: `Model advisor: ${word} for this session.` }
+    }
+    if (word === 'reset') {
+      await choose($, null, 'you')
+      const own = await ownOf($)
+
+      return { text: `Back to the session's own setup${own === null ? '' : `, ${setupLabel(own.model, own.effort)}`}.` }
+    }
+    if (word === 'use') {
+      const a = (await read($, draft)) ?? (await read($, sent))
+      if (a === null) return { text: 'Nothing assessed yet: send a prompt, or /advise <prompt>.' }
+      await choose($, a.setup, 'you')
+
+      return { text: `Sending as ${setupLabel(a.setup.model, a.setup.effort)} until /advise reset.` }
+    }
+
+    const a = arg.length > 0 ? assess(arg, await read($, sent)) : await read($, sent)
+    if (a === null) return { text: 'Nothing assessed yet: send a prompt, or /advise <prompt>.' }
+    const v = verdict(a, await currentOf($), await read($, contextTokens))
+    const context = await read($, contextTokens)
+
+    return {
+      text: [
+        `${TIER_LABEL[a.tier]}: "${a.excerpt}"`,
+        v.head,
+        v.detail,
+        context > 0 ? `Context now: ${kTokens(context)} tokens.` : '',
+        `Mode: ${await modeOf($, configured)}.${v.offer === null ? '' : ' /advise use to switch, /advise reset to go back.'}`,
+      ]
+        .filter(Boolean)
+        .join('\n'),
+    }
+  })
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey || (await modeOf($, configured)) === 'off') return next(e)
+    const a = (await read($, draft)) ?? (await read($, sent))
+    if (a === null || (await read($, isHidden))) return next(e)
+
+    const chosen = await read($, override)
+    const own = await ownOf($)
+    const context = await read($, contextTokens)
+    const now = await currentOf($)
+    const m = e.props.isWorking && now !== null ? midway(a, now, (await read($, run)).steps, context) : null
+    const v = m !== null && now !== null ? midwayVerdict(m, a, now, context) : verdict(a, now, context)
+    const offer = v.offer !== null && (chosen === null || chosen.model !== v.offer.model || chosen.effort !== v.offer.effort) ? v.offer : null
+    const tone = v.tone === 'warn' ? 'warning' : v.tone === 'save' ? 'success' : undefined
+    const { Box, Button, Text } = $.ui.resolve(e)
+
+    return (
+      <Box flexDirection="column">
+        <Text bold={v.tone !== 'fits'} dimColor={v.tone === 'fits' || v.tone === 'note'} color={tone}>
+          {v.head}
+        </Text>
+        {v.tone !== 'fits' && <Text dimColor>{v.detail}</Text>}
+        {chosen !== null && (
+          <Text dimColor>
+            Sending as {setupLabel(chosen.model, chosen.effort)}
+            {chosen.by === 'auto' ? ' (auto)' : ''}
+            {own === null ? '' : ` in place of ${setupLabel(own.model, own.effort)}`}
+          </Text>
+        )}
+        {(offer !== null || chosen !== null || v.tone !== 'fits') && (
+          <Box flexDirection="row" gap={1}>
+            {offer !== null && (
+              <Button
+                key="use"
+                variant="primary"
+                label={`Use ${setupLabel(offer.model, offer.effort)}`}
+                onPress={() => choose($, offer, 'you')}
+              />
+            )}
+            {chosen !== null && (
+              <Button
+                key="back"
+                label={own === null ? 'Back to the session model' : `Back to ${setupLabel(own.model, own.effort)}`}
+                onPress={() => choose($, null, 'you')}
+              />
+            )}
+            {v.tone !== 'fits' && <Button key="hide" label="Hide" onPress={() => update($, isHidden, () => true)} />}
+          </Box>
+        )}
+      </Box>
+    )
+  })
+}

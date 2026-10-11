@@ -1,0 +1,5 @@
+{
+  "name": "my-mods",
+  "owner": { "name": "MC Mediavilla" },
+  "plugins": [{ "name": "model-advisor", "source": "./model-advisor" }]
+}
