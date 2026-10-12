@@ -75,7 +75,7 @@ const SIGNALS: readonly Signal[] = [
   { label: 'asks why', weight: 3, test: has(/\b(why (does|is|do|are|did|isn'?t|doesn'?t|won'?t|can'?t|would)|root cause|investigate|figure out|diagnose|debug|track down|get to the bottom)\b/) },
   { label: 'touches many files', weight: 2, test: has(/\b(refactor|restructure|re-?architect|migrate|rewrite|overhaul|redesign|across (the|all|every)|every (file|screen|component|test|controller|page)|(whole|entire) (codebase|app|project|repo)|codebase-wide|end[- ]to[- ]end)\b/) },
   { label: 'design or planning', weight: 2, test: has(/\b(architecture|design (a|an|the)|system design|trade-?offs?|plan (the|a|an|out|for)|make a plan|epic|roadmap|strategy|evaluate (the )?options|pros and cons)\b/) },
-  { label: 'carries out a plan', weight: 3, test: has(/\b(start|begin|do|run|execute|build) (the )?(phase|step|stage|part|milestone) ?\d/) },
+  { label: 'carries out a plan', weight: 3, test: s => carriesOutAPlan(s) },
   { label: 'hard-to-pin bug', weight: 3, test: has(/\b(race condition|deadlock|flaky|intermittent(ly)?|heisenbug|memory leak|leaks memory|corrupt(ed|ion)|non-?deterministic|only (happens|fails|breaks) (in|on|when))\b/) },
   { label: 'asks for deep thinking', weight: 4, test: has(/\b(ultrathink|think (really |very )?hard(er)?|think deeply|hardest|most capable|use fable)\b/) },
 
@@ -89,7 +89,41 @@ const SIGNALS: readonly Signal[] = [
   { label: 'several asks', weight: 1, test: s => (s.raw.match(/^\s*([-*]|\d+[.)])\s+\S/gm) ?? []).length >= 4 },
 ]
 
-const FOLLOW_ON = /^(continue|go on|go ahead|keep going|carry on|proceed|yes|yep|yeah|y|sure|do it|do that|try again|again|retry|same (for|with|thing)|and (the|now)|next|looks good|lgtm|sounds good|fix (it|that|this|them)|that'?s (wrong|not)|no)\b/
+/** A step of a plan, named by its number or its place in the order: "phase 24.5", "the next phase". */
+const PLAN_STEP = /\b((phase|step|stage|part|milestone)[ -]?\d+(\.\d+)*|(next|following|final|last|remaining) (phase|stage|milestone))\b/
+/** What sets a step going. Read anywhere in the prompt, so "start next phase" and "next phase start" are one prompt. */
+const PLAN_GO = /\b(start|begin|kick (it )?off|do|run|execute|build|tackle|work on|implement|carry out|move on|go|proceed|continue|onto)\b/
+/** What may stand beside a step and leave it the whole prompt: "next phase please". */
+const PLAN_FILLER = /\b(ok(ay)?|so|right|now|then|please|pls|let'?s|lets|the|on|to|and)\b/g
+/** A prompt about a step rather than one starting it: "what does the next phase cover?" */
+const ASKING = /^(what|what's|whats|where|which|who|when|how|why|is|are|was|does|did|should)\b/
+
+/** The old, strict reading, for a long prompt that may only mention a step: the verb right before it, and a number. */
+const PLAN_STEP_NUMBERED = /\b(start|begin|do|run|execute|build) (the )?(phase|step|stage|part|milestone) ?\d/
+/** Past this, a prompt describes work rather than starting a step, so word order alone no longer says which. */
+const PLAN_PROMPT_CHARS = 100
+
+function carriesOutAPlan(s: Scan): boolean {
+  if (PLAN_STEP_NUMBERED.test(s.prose)) return true
+  if (s.prose.length > PLAN_PROMPT_CHARS || !PLAN_STEP.test(s.prose) || ASKING.test(s.first)) return false
+  if (PLAN_GO.test(s.prose)) return true
+
+  const rest = s.prose.replace(new RegExp(PLAN_STEP.source, 'g'), ' ').replace(PLAN_FILLER, ' ')
+
+  return rest.replace(/[^a-z0-9]+/g, '') === ''
+}
+
+const FOLLOW_ON =/^(continue|go on|go ahead|keep going|carry on|proceed|yes|yep|yeah|y|sure|do it|do that|try again|again|retry|same (for|with|thing)|and (the|now)|next|looks good|lgtm|sounds good|fix (it|that|this|them)|that'?s (wrong|not)|no)\b/
+
+/** Words a follow-on may carry after its opener ("continue with the tests"); more is a new instruction ("next, wire up the retry logic"). */
+const FOLLOW_ON_WORDS = 3
+
+/** How many words are left once the opening follow-on phrase is taken off. */
+function followOnRest(s: Scan): number {
+  const rest = s.prose.replace(FOLLOW_ON, ' ')
+
+  return rest.split(/[^a-z0-9']+/).filter(Boolean).length
+}
 
 function fileCount(raw: string): number {
   const found = raw.match(/[\w./\\-]+\.(tsx?|jsx?|php|py|go|rs|rb|java|kt|cs|css|html|md|json|ya?ml|sql|vue|svelte)\b/g) ?? []
@@ -129,7 +163,7 @@ export function assess(text: string, previous: Assessment | null): Assessment {
   const positive = hit.filter(h => h.weight > 0).reduce((n, h) => n + h.weight, 0)
   const negative = hit.filter(h => h.weight < 0).reduce((n, h) => n + h.weight, 0)
 
-  if (positive <= 1 && s.raw.length < 120 && FOLLOW_ON.test(s.first) && negative === 0) {
+  if (positive <= 1 && s.raw.length < 120 && FOLLOW_ON.test(s.first) && negative === 0 && followOnRest(s) <= FOLLOW_ON_WORDS) {
     const tier = previous?.tier ?? 'standard'
 
     return {

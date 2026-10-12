@@ -26,6 +26,35 @@ describe('reading a prompt', () => {
     expect(tierOf('start phase 23.7')).toBe('involved')
   })
 
+  test('starting a phase is involved, whatever order the words come in', () => {
+    const prompts = [
+      'start next phase',
+      'next phase start',
+      'start the next phase',
+      'next phase',
+      'next phase please',
+      'begin phase 24.5',
+      'phase 24.5 start',
+      'on to the next phase',
+      "let's do the next phase",
+      'proceed with phase-24.5',
+    ]
+    expect(prompts.map(p => [p, tierOf(p)])).toEqual(prompts.map(p => [p, 'involved']))
+  })
+
+  test('a phase that starts the prompt is not a follow-on', () => {
+    expect(assess('next phase start', assess('thanks!', null)).isFollowOn).toBe(false)
+  })
+
+  test('a long prompt that only mentions a step is not starting it', () => {
+    const a = assess('in step 2 of the build the queue worker keeps dying when the config cache is stale and I do not know why', null)
+    expect(a.reasons).not.toContain('carries out a plan')
+  })
+
+  test('a question about a phase does not start it', () => {
+    expect(assess('what does the next phase cover?', null).reasons).not.toContain('carries out a plan')
+  })
+
   test('a hard-to-pin bug hunted to its root is deep', () => {
     expect(tierOf('there is a race condition in the queue worker that only happens in production, find the root cause')).toBe('deep')
   })
@@ -41,6 +70,15 @@ describe('reading a prompt', () => {
     expect(next.isFollowOn).toBe(true)
     expect(next.tier).toBe(last.tier)
     expect(next.isSure).toBe(false)
+  })
+
+  test('a follow-on word that opens a new instruction is read as the instruction', () => {
+    const last = assess('refactor the auth flow across all controllers', null)
+    const a = assess('next, wire up the retry logic', last)
+    expect(a.isFollowOn).toBe(false)
+    expect(a.reasons).toContain('builds something')
+    expect(assess('continue with the tests', last).isFollowOn).toBe(true)
+    expect(assess('fix it', last).isFollowOn).toBe(true)
   })
 
   test('a word that only starts like a follow-on is not one', () => {
