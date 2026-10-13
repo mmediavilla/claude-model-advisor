@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      # The plugin API moves between Claude Code releases. Move this pin on purpose, with the tests.
+      - name: Install Claude Code
+        run: npm install --global @anthropic-ai/claude-code@2.1.296
+      - name: Validate the marketplace and the plugin, warnings included
+        run: |
+          for dir in . model-advisor; do
+            out=$(claude plugin validate "$dir" 2>&1) || { echo "$out"; exit 1; }
+            echo "$out"
+            if grep -qi 'warning' <<<"$out"; then echo "::error::claude plugin validate $dir has warnings"; exit 1; fi
+          done
+      - name: Test the plugin
+        run: claude plugin test model-advisor
+
+  version:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: A change to the plugin bumps its version and says what changed
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: node scripts/release.mjs check "origin/$BASE_REF"

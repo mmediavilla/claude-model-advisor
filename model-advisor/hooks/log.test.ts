@@ -87,6 +87,6 @@ describe('the log', () => {
         '/advise label <tier> corrects the last reading. /advise export saves the log for scripts/calibrate.ts.',
       ].join('\n'),
     )
-    expect(summary([], false)).toBe('Model advisor log: nothing logged yet. Logging is off: turn it on in the config menu.')
+    expect(summary([], false)).toBe('Model advisor log: nothing logged yet. Logging is off: set the log option to on in /plugin configure.')
   })
 })

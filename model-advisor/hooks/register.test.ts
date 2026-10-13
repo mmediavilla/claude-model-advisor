@@ -256,6 +256,8 @@ describe('the session so far', () => {
 })
 
 describe('the prompt log', () => {
+  const LOG_ON = { options: { log: 'on' } } as const
+
   /** The world the log stands on, in memory: a store, a clock, a session id, and the files written. */
   function world(on: On, store: Record<string, unknown> = {}) {
     mock.store(on, store)
@@ -278,7 +280,7 @@ describe('the prompt log', () => {
     return text.trim() === '' ? [] : text.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
   }
 
-  test('logs each prompt with how its turn went', async ($, on) => {
+  test('logs each prompt with how its turn went', LOG_ON, async ($, on) => {
     const written = world(on)
     engine(on)
     await step($)
@@ -312,7 +314,7 @@ describe('the prompt log', () => {
     ])
   })
 
-  test('records the setup you chose with Use', async ($, on) => {
+  test('records the setup you chose with Use', LOG_ON, async ($, on) => {
     const written = world(on)
     engine(on)
     await step($)
@@ -324,7 +326,7 @@ describe('the prompt log', () => {
     expect(await logOf($, written)).toEqual([expect.objectContaining({ ranOn: { model: 'sonnet', effort: 'low' }, chosenBy: 'you' })])
   })
 
-  test('records a band you hid', async ($, on) => {
+  test('records a band you hid', LOG_ON, async ($, on) => {
     const written = world(on)
     engine(on)
     await step($)
@@ -336,7 +338,7 @@ describe('the prompt log', () => {
     expect(await logOf($, written)).toEqual([expect.objectContaining({ wasHidden: true })])
   })
 
-  test('/advise label corrects the last reading, and refuses a word that is not a tier', async ($, on) => {
+  test('/advise label corrects the last reading, and refuses a word that is not a tier', LOG_ON, async ($, on) => {
     const written = world(on)
     engine(on)
     await step($)
@@ -349,7 +351,7 @@ describe('the prompt log', () => {
     expect(await logOf($, written)).toEqual([expect.objectContaining({ tier: 'light', label: 'standard' })])
   })
 
-  test('/advise label during a turn labels the prompt that is running', async ($, on) => {
+  test('/advise label during a turn labels the prompt that is running', LOG_ON, async ($, on) => {
     const written = world(on)
     engine(on)
     await step($)
@@ -361,7 +363,7 @@ describe('the prompt log', () => {
     expect(await logOf($, written)).toEqual([expect.objectContaining({ label: 'involved' })])
   })
 
-  test('/advise log sums it up, and /advise log clear empties it', async ($, on) => {
+  test('/advise log sums it up, and /advise log clear empties it', LOG_ON, async ($, on) => {
     const written = world(on)
     engine(on)
     await step($)
@@ -397,7 +399,7 @@ describe('the prompt log', () => {
     expect(written).toEqual([])
   })
 
-  test("a subagent's turn is not logged", async ($, on) => {
+  test("a subagent's turn is not logged", LOG_ON, async ($, on) => {
     const written = world(on)
     engine(on)
     await step($)
@@ -407,7 +409,7 @@ describe('the prompt log', () => {
     expect(await logOf($, written)).toEqual([])
   })
 
-  test('keeps nothing with the advisor off', async ($, on) => {
+  test('keeps nothing with the advisor off', LOG_ON, async ($, on) => {
     const written = world(on)
     engine(on)
     await step($)
@@ -419,7 +421,7 @@ describe('the prompt log', () => {
     expect(await logOf($, written)).toEqual([])
   })
 
-  test('keeps nothing with the log option off', { options: { log: 'off' } }, async ($, on) => {
+  test('keeps nothing unless you turn it on', async ($, on) => {
     const written = world(on)
     engine(on)
     await step($)
@@ -431,7 +433,7 @@ describe('the prompt log', () => {
     expect((await advise($, 'log')).text).toContain('Logging is off')
   })
 
-  test('a log that cannot be written never stops the prompt or the advice', async ($, on) => {
+  test('a log that cannot be written never stops the prompt or the advice', LOG_ON, async ($, on) => {
     const sent = engine(on)
     await step($)
     await submit($, 'fix the typo in README.md')

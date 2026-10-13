@@ -71,7 +71,7 @@ function counts(log: readonly LogEntry[], keep: (e: LogEntry) => boolean): strin
 
 /** What /advise log says: how prompts were read, how their turns went, and how the labels agree. */
 export function summary(log: readonly LogEntry[], isOn: boolean): string {
-  const state = isOn ? 'Logging is on.' : 'Logging is off: turn it on in the config menu.'
+  const state = isOn ? 'Logging is on.' : 'Logging is off: set the log option to on in /plugin configure.'
   if (log.length === 0) return `Model advisor log: nothing logged yet. ${state}`
 
   const sessions = new Set(log.map(e => e.session)).size

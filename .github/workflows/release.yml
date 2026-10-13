@@ -1,0 +1,36 @@
+name: Release
+
+# Every merge to main that bumps the plugin's version is a release: tag it and
+# publish the CHANGELOG section as its GitHub release.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Tag and release a new version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(node scripts/release.mjs version)
+          if git rev-parse --quiet --verify "refs/tags/v$version" >/dev/null; then
+            echo "v$version is already released."
+            exit 0
+          fi
+          node scripts/release.mjs notes "$version" > notes.md
+          gh release create "v$version" --target "$GITHUB_SHA" --title "model-advisor $version" --notes-file notes.md

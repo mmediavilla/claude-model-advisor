@@ -118,7 +118,8 @@ async function logTurn($: $, held: PendingEntry, ended: LastTurn['ended']) {
 
 export const register: Register = (on, options) => {
   const configured: Mode = MODES.includes(options.mode as Mode) ? (options.mode as Mode) : 'suggest'
-  const isLogging = options.log !== 'off'
+  // The log is opt in: nobody finds their prompts kept without having asked.
+  const isLogging = options.log === 'on'
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
