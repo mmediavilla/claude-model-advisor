@@ -1,5 +1,22 @@
 {
-  "name": "my-mods",
-  "owner": { "name": "MC Mediavilla" },
-  "plugins": [{ "name": "model-advisor", "source": "./model-advisor" }]
+  "name": "mmediavilla",
+  "description": "Claude Code mods by MC Mediavilla",
+  "owner": {
+    "name": "MC Mediavilla"
+  },
+  "plugins": [
+    {
+      "name": "model-advisor",
+      "source": "./model-advisor",
+      "description": "Suggests the model and effort each prompt needs, from its words and how the session is going",
+      "category": "productivity",
+      "keywords": [
+        "model",
+        "effort",
+        "cost"
+      ],
+      "homepage": "https://github.com/mmediavilla/claude-model-advisor",
+      "license": "MIT"
+    }
+  ]
 }

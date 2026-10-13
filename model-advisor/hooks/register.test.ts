@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
 import type { On, RenderElement, TurnStepInput } from 'claude-code'
 
@@ -15,6 +15,8 @@ function engine(on: On, contextTokens = 20_000): Sent[] {
   const sent: Sent[] = []
   on('prompt.submit', ($, e) => ({ text: e.text }))
   on('ui.status', () => ({ value: undefined }))
+  on('turn.complete', ($, e) => ({ text: e.answer }))
+  on('tool.call', () => ({ result: 'exit 1', text: 'exit 1', isError: true }))
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
     const { Text } = $.ui.resolve(e)
 
@@ -52,6 +54,11 @@ async function step($: Engine, agentId?: string) {
 }
 
 const submit = ($: Engine, text: string) => $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } })
+const finish = ($: Engine) => $.turn.complete({ turnId: 't', answer: '', durationMs: 1, isAborted: false, reason: 'answer' })
+/** A tool call that fails, in the main loop or, given an id, a subagent's. */
+const failingTool = ($: Engine, agentId?: string) => $.tool.call({ tool: 'Bash', command: 'npm test', ...(agentId ? { agentId } : {}) })
+const advise = ($: Engine, args = '') =>
+  $.command.run({ command: 'advise', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
 
 describe('suggest', () => {
   test('a light prompt on Opus at xhigh offers Sonnet at low, and Use sends the next request on it', async ($, on) => {
@@ -163,10 +170,278 @@ describe('auto', () => {
     const sent = engine(on)
     await step($)
     await submit($, 'there is a race condition in the queue worker, find the root cause')
-    await $.command.run({ command: 'advise', args: 'use', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+    await advise($, 'use')
     await submit($, 'commit this and push')
     await step($)
     expect(sent.at(-1)).toEqual({ model: 'claude-fable-5-1', effort: 'high' })
+  })
+})
+
+describe('the session so far', () => {
+  test('a short prompt that points back is read with the work before it', async ($, on) => {
+    engine(on)
+    await step($)
+    await submit($, 'why does the queue worker deadlock under load?')
+    await step($)
+    await finish($)
+    await submit($, 'add a test for it')
+
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect(await ui.find({ type: 'Text', text: /Involved: Opus 5\.5 · high would do/ })).toBeDefined()
+  })
+
+  test("failing tool calls in the main loop make a struggle, and the next follow-on a tier harder; a subagent's do not count", async ($, on) => {
+    engine(on)
+    await step($)
+    await submit($, 'fix the typo in README.md')
+    await step($)
+    for (let i = 0; i < 3; i++) await failingTool($)
+    await failingTool($, 'agent-1')
+    await finish($)
+    await submit($, 'try again')
+
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect(await ui.find({ type: 'Text', text: /Standard: Sonnet 5\.5 · medium would do/ })).toBeDefined()
+    expect((await advise($)).text).toContain('Last turn: 1 request, 3 tool errors, harder than it read.')
+  })
+
+  test('two failing tool calls are not a struggle', async ($, on) => {
+    engine(on)
+    await step($)
+    await submit($, 'fix the typo in README.md')
+    await step($)
+    for (let i = 0; i < 2; i++) await failingTool($)
+    await finish($)
+    await submit($, 'try again')
+
+    expect((await advise($)).text).toContain('Last turn: 1 request, 2 tool errors.')
+    expect(await (await $.ui.mount({ ...BAND, surface: 'terminal' })).find({ type: 'Text', text: /Follows on from the last prompt/ })).toBeDefined()
+  })
+
+  test('a /clear forgets the work before it', async ($, on) => {
+    engine(on)
+    on('session.end', ($, e) => ({ sessionId: 's' }))
+    await step($)
+    await submit($, 'why does the queue worker deadlock under load?')
+    await step($)
+    await finish($)
+    await $.session.end({ reason: 'clear', sessionId: 's', resume: { id: 's' } })
+    await submit($, 'add a test for it')
+
+    expect(await (await $.ui.mount({ ...BAND, surface: 'terminal' })).find({ type: 'Text', text: /Standard: Sonnet 5\.5 · medium would do/ })).toBeDefined()
+    expect((await advise($)).text).not.toContain('Last turn')
+  })
+
+  test("after a turn that ran long, auto goes back to the session's own setup, and until a turn goes as read only a chore goes cheap", { options: { mode: 'auto' } }, async ($, on) => {
+    const sent = engine(on)
+    await step($)
+    await submit($, 'fix the typo in README.md')
+    await step($)
+    expect(sent.at(-1)).toEqual({ model: 'claude-sonnet-5-5', effort: 'low' })
+    for (let i = 1; i < 12; i++) await step($)
+    await finish($)
+
+    await submit($, 'try again')
+    await step($)
+    expect(sent.at(-1)).toEqual({ model: 'claude-opus-5-5', effort: 'xhigh' })
+
+    await submit($, 'fix the typo in the footer')
+    await step($)
+    expect(sent.at(-1)).toEqual({ model: 'claude-opus-5-5', effort: 'xhigh' })
+
+    await submit($, 'commit this and push')
+    await step($)
+    expect(sent.at(-1)).toEqual({ model: 'claude-haiku-5-5', effort: 'low' })
+  })
+})
+
+describe('the prompt log', () => {
+  const LOG_ON = { options: { log: 'on' } } as const
+
+  /** The world the log stands on, in memory: a store, a clock, a session id, and the files written. */
+  function world(on: On, store: Record<string, unknown> = {}) {
+    mock.store(on, store)
+    mock.clock(on, { now: 1_000 })
+    on('session.id', () => ({ value: 's1' }))
+    const written: { path: string; text: string }[] = []
+    on('fs.write', ($, e) => {
+      written.push({ path: e.path, text: e.text })
+
+      return { value: undefined }
+    })
+
+    return written
+  }
+  /** The log as /advise export saves it. */
+  async function logOf($: Engine, written: { text: string }[]) {
+    await advise($, 'export log.jsonl')
+    const text = written.at(-1)?.text ?? ''
+
+    return text.trim() === '' ? [] : text.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
+  }
+
+  test('logs each prompt with how its turn went', LOG_ON, async ($, on) => {
+    const written = world(on)
+    engine(on)
+    await step($)
+    await submit($, 'fix the typo in README.md, my key is sk-ant-api03-abcdefghijklmnopqrstuv')
+    await step($)
+    await step($)
+    await failingTool($)
+    await finish($)
+
+    expect(await logOf($, written)).toEqual([
+      {
+        at: 1_000,
+        session: 's1',
+        prompt: 'fix the typo in README.md, my key is [secret]',
+        chars: 45,
+        tier: 'light',
+        reasons: ['cosmetic edit', 'fixes a bug'],
+        isSure: true,
+        isFollowOn: false,
+        mode: 'suggest',
+        own: { model: 'opus', effort: 'xhigh' },
+        ranOn: { model: 'opus', effort: 'xhigh' },
+        chosenBy: null,
+        steps: 2,
+        toolErrors: 1,
+        contextTokens: 20_000,
+        ended: 'answer',
+        didRunLong: false,
+        wasHidden: false,
+      },
+    ])
+  })
+
+  test('records the setup you chose with Use', LOG_ON, async ($, on) => {
+    const written = world(on)
+    engine(on)
+    await step($)
+    await submit($, 'fix the typo in README.md')
+    await (await $.ui.mount({ ...BAND, surface: 'terminal' })).press({ key: 'use' })
+    await step($)
+    await finish($)
+
+    expect(await logOf($, written)).toEqual([expect.objectContaining({ ranOn: { model: 'sonnet', effort: 'low' }, chosenBy: 'you' })])
+  })
+
+  test('records a band you hid', LOG_ON, async ($, on) => {
+    const written = world(on)
+    engine(on)
+    await step($)
+    await submit($, 'fix the typo in README.md')
+    await (await $.ui.mount({ ...BAND, surface: 'terminal' })).press({ key: 'hide' })
+    await step($)
+    await finish($)
+
+    expect(await logOf($, written)).toEqual([expect.objectContaining({ wasHidden: true })])
+  })
+
+  test('/advise label corrects the last reading, and refuses a word that is not a tier', LOG_ON, async ($, on) => {
+    const written = world(on)
+    engine(on)
+    await step($)
+    await submit($, 'fix the typo in README.md')
+    await step($)
+    await finish($)
+
+    expect((await advise($, 'label huge')).text).toBe('Label with a tier: trivial, light, standard, involved or deep.')
+    expect((await advise($, 'label standard')).text).toBe('Labelled "fix the typo in README.md" Standard (read as Light).')
+    expect(await logOf($, written)).toEqual([expect.objectContaining({ tier: 'light', label: 'standard' })])
+  })
+
+  test('/advise label during a turn labels the prompt that is running', LOG_ON, async ($, on) => {
+    const written = world(on)
+    engine(on)
+    await step($)
+    await submit($, 'fix the typo in README.md')
+    await step($)
+    await advise($, 'label involved')
+    await finish($)
+
+    expect(await logOf($, written)).toEqual([expect.objectContaining({ label: 'involved' })])
+  })
+
+  test('/advise log sums it up, and /advise log clear empties it', LOG_ON, async ($, on) => {
+    const written = world(on)
+    engine(on)
+    await step($)
+    await submit($, 'fix the typo in README.md')
+    await step($)
+    await finish($)
+
+    expect((await advise($, 'log')).text).toContain('Model advisor log: 1 prompt from 1 session')
+    expect((await advise($, 'log clear')).text).toBe('Cleared 1 logged prompt.')
+    expect(await logOf($, written)).toEqual([])
+  })
+
+  test('/advise export saves JSON lines where you say, or under your home folder', async ($, on) => {
+    const written = world(on, { log: [{ prompt: 'a' }, { prompt: 'b' }] })
+    // Windows sets USERPROFILE and often no HOME.
+    mock.env(on, { USERPROFILE: '/users/mc' })
+    engine(on)
+
+    expect((await advise($, 'export logs/advisor.jsonl')).text).toBe(
+      'Saved 2 logged prompts to logs/advisor.jsonl.\nCalibrate with: npx tsx scripts/calibrate.ts logs/advisor.jsonl',
+    )
+    expect((await advise($, 'export')).text).toContain('to /users/mc/.claude/model-advisor-log.jsonl.')
+    expect(written.map(w => w.text)).toEqual(['{"prompt":"a"}\n{"prompt":"b"}\n', '{"prompt":"a"}\n{"prompt":"b"}\n'])
+    expect(written[0]?.path.endsWith('/logs/advisor.jsonl')).toBe(true)
+    expect(written[1]?.path).toBe('/users/mc/.claude/model-advisor-log.jsonl')
+  })
+
+  test('"export the CSV as JSON" is a prompt to judge, not the command', async ($, on) => {
+    const written = world(on)
+    engine(on)
+
+    expect((await advise($, 'export the CSV as JSON')).text).toContain('"export the CSV as JSON"')
+    expect(written).toEqual([])
+  })
+
+  test("a subagent's turn is not logged", LOG_ON, async ($, on) => {
+    const written = world(on)
+    engine(on)
+    await step($)
+    await submit($, 'fix the typo in README.md')
+    await $.turn.complete({ turnId: 'sub', agentId: 'agent-1', answer: '', durationMs: 1, isAborted: false, reason: 'answer' })
+
+    expect(await logOf($, written)).toEqual([])
+  })
+
+  test('keeps nothing with the advisor off', LOG_ON, async ($, on) => {
+    const written = world(on)
+    engine(on)
+    await step($)
+    await advise($, 'off')
+    await submit($, 'fix the typo in README.md')
+    await step($)
+    await finish($)
+
+    expect(await logOf($, written)).toEqual([])
+  })
+
+  test('keeps nothing unless you turn it on', async ($, on) => {
+    const written = world(on)
+    engine(on)
+    await step($)
+    await submit($, 'fix the typo in README.md')
+    await step($)
+    await finish($)
+
+    expect(await logOf($, written)).toEqual([])
+    expect((await advise($, 'log')).text).toContain('Logging is off')
+  })
+
+  test('a log that cannot be written never stops the prompt or the advice', LOG_ON, async ($, on) => {
+    const sent = engine(on)
+    await step($)
+    await submit($, 'fix the typo in README.md')
+    await step($)
+    await finish($)
+
+    expect(sent).toHaveLength(2)
+    expect(await (await $.ui.mount({ ...BAND, surface: 'terminal' })).find({ type: 'Text', text: /Sonnet 5\.5 · low would do/ })).toBeDefined()
   })
 })
 

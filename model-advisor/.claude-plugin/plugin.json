@@ -1,8 +1,19 @@
 {
   "name": "model-advisor",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Reads each prompt you send and says which model and effort would do it, so you stop paying Opus at xhigh for a commit message.",
-  "author": { "name": "MC Mediavilla" },
+  "author": {
+    "name": "MC Mediavilla"
+  },
+  "homepage": "https://github.com/mmediavilla/claude-model-advisor",
+  "repository": "https://github.com/mmediavilla/claude-model-advisor",
+  "license": "MIT",
+  "keywords": [
+    "model",
+    "effort",
+    "cost",
+    "routing"
+  ],
   "types": "./types/index.d.ts",
   "userConfig": {
     "mode": {
@@ -10,7 +21,21 @@
       "title": "Model advisor",
       "description": "suggest: show what would do, change nothing. auto: also send a prompt on the cheaper setup when the advisor is sure and the switch pays for itself. off: say nothing.",
       "default": "suggest",
-      "options": ["suggest", "auto", "off"]
+      "options": [
+        "suggest",
+        "auto",
+        "off"
+      ]
+    },
+    "log": {
+      "type": "string",
+      "title": "Prompt log",
+      "description": "on: keep your newest 400 prompts, how each was read and how its turn went, in this plugin's store on your machine, for /advise log and calibration. Secrets are masked; nothing is sent anywhere. off (the default): keep nothing new.",
+      "default": "off",
+      "options": [
+        "on",
+        "off"
+      ]
     }
   }
 }

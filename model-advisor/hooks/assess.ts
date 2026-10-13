@@ -2,7 +2,7 @@
 // asked: a judge that spends tokens on every prompt to save tokens is the
 // wrong way round, and a regex can run on every keystroke.
 
-import type { Assessment, Effort, ModelKey, Setup, Tier } from '../types'
+import type { Assessment, Effort, LastTurn, ModelKey, Setup, Tier } from '../types'
 
 /**
  * List prices per million tokens (the Claude API skill's table, 2026-10-06).
@@ -57,27 +57,41 @@ type Scan = { prose: string; raw: string; first: string; isShort: boolean }
 
 const has = (re: RegExp) => (s: Scan) => re.test(s.prose)
 
+/** Asks what is behind a problem: "why does", "find out why", "what's causing". */
+const WHY = /\b(why (does|is|do|are|did|was|were|has|have|isn'?t|doesn'?t|won'?t|can'?t|would)|root cause|investigate|figure out|find out (why|what|how|where|whether)|work out why|diagnose|debug|track (\w+ )?down|get to the bottom|what('?s| is) (causing|wrong with|breaking)|what causes)\b/
+
+/** A move between versions or between named tools: "Laravel 10 to 11", "from MySQL to Postgres". */
+const STACK_JUMP = /\b(upgrade|migrate|port) .{0,40}\b(from|to) ([a-z.]+ ?)?v?\d+/
+/** Named the way tools are, so a format or zone (CSV, UTC) is not one. */
+const STACK_SWAP = /\b([Uu]pgrade|[Mm]igrate|[Pp]ort|[Mm]ove|[Ss]witch)\b.{0,40}\bfrom [A-Z][\w.]*[a-z][\w.]*.{0,20}\bto [A-Z][\w.]*[a-z][\w.]*/
+
 const SIGNALS: readonly Signal[] = [
   // Cheap work
-  { label: 'small talk', weight: -4, test: s => /^(hi|hello|hey|thanks|thank you|ty|ok|okay|cool|nice|great|perfect|awesome)\b[\s!.]*$/.test(s.first) },
-  { label: 'git chore', weight: -3, test: has(/\b(git (status|log|diff|add|commit|push|pull|fetch|checkout|switch|stash|branch)|commit (this|it|these|that|the changes|everything)|push (it|this|the branch)|open (a|the) pr|merge (it|the pr)|pull (the )?latest)\b/) },
-  { label: 'runs a command', weight: -2, test: has(/\b((re-?)?run (the )?(tests?|build|lint(er)?|pint|jest|phpunit|suite|migrations?|seeders?)|start the (dev )?server|restart the (worker|server|queue))\b/) },
+  { label: 'small talk', weight: -4, test: s => /^((hi|hello|hey|thanks|thank you|thx|ty|ok|okay|cool|nice|great|perfect|awesome)( so much| a lot)?\b[\s,!.]*)+$/.test(s.first) },
+  { label: 'git chore', weight: -3, test: has(/\b(git (status|log|diff|add|commit|push|pull|fetch|checkout|switch|stash|branch)|commit (this|it|these|that|the changes|everything)|(and|then) (commit|push)$|push (it|this|the branch)|open (a|the) pr|merge (it|the pr)|pull (the )?latest|stash (my|the|these|this|it|everything)|(create|make|switch to|check ?out|delete) (a |the |this )?(new )?branch|sync with (main|master|develop|upstream)|rebase on(to)? (main|master|develop))\b/) },
+  // Only where the command is the ask, not the job of what is built: "run the tests", not "set up CI to run the tests".
+  { label: 'runs a command', weight: -2, test: has(/(^|[,.;:!?]\s*|\b(and|then|now|please|pls|just|also|you)\s+)((re-?)?run (the )?(tests?|build|lint(er)?|pint|jest|phpunit|suite|migrations?|seeders?)|start the (dev )?server|restart the (worker|server|queue))\b/) },
   { label: 'cosmetic edit', weight: -2, test: has(/\b(typos?|spelling|rename|reword|indent(ation)?|reformat|whitespace|sort (the )?imports|unused imports?|bump (the )?version|add a comment|lint (errors?|warnings?))\b/) },
-  { label: 'quick question', weight: -1, test: s => s.prose.length < 200 && /^(what|what's|whats|where|which|who|when|how many|how much|how do i|is there|are there|list|show me)\b/.test(s.first) },
+  { label: 'quick question', weight: -1, test: s => s.prose.length < 200 && /^(what|what's|whats|where|which|who|when|how many|how much|how do i|is there|are there|list|show me)\b/.test(s.first) && !WHY.test(s.prose) },
   { label: 'explain or summarise', weight: -1, test: has(/\b(explain|summari[sz]e|tl;?dr|translate)\b/) },
 
   // Work
-  { label: 'builds something', weight: 1, test: has(/\b(add|implement|create|build|write|make|wire up|hook up|set up|scaffold|generate)\b/) },
-  { label: 'new feature', weight: 1, test: has(/\b(feature|endpoint|api|page|screen|component|module|service|migration|schema|mod|plugin|integration|workflow|pipeline)\b/) },
-  { label: 'fixes a bug', weight: 1, test: has(/\b(fix|bug|broken|doesn'?t work|does not work|not working|fails?|failing|crash(es|ing)?)\b/) },
-  { label: 'review', weight: 1, test: has(/\b(review|audit)\b/) },
-  { label: 'needs care', weight: 1, test: has(/\b(carefully|thorough(ly)?|make sure|don'?t break|do not break|production|security|vulnerab\w*|auth(entication|orization)?|concurren\w*|performance|optimi[sz]\w*|algorithm|prove)\b/) },
-  { label: 'asks why', weight: 3, test: has(/\b(why (does|is|do|are|did|isn'?t|doesn'?t|won'?t|can'?t|would)|root cause|investigate|figure out|diagnose|debug|track down|get to the bottom)\b/) },
-  { label: 'touches many files', weight: 2, test: has(/\b(refactor|restructure|re-?architect|migrate|rewrite|overhaul|redesign|across (the|all|every)|every (file|screen|component|test|controller|page)|(whole|entire) (codebase|app|project|repo)|codebase-wide|end[- ]to[- ]end)\b/) },
-  { label: 'design or planning', weight: 2, test: has(/\b(architecture|design (a|an|the)|system design|trade-?offs?|plan (the|a|an|out|for)|make a plan|epic|roadmap|strategy|evaluate (the )?options|pros and cons)\b/) },
+  { label: 'builds something', weight: 1, test: has(/\b(add|implement|create|build|write|make(?! sure)|wire up|hook up|set up|scaffold|generate)\b/) },
+  { label: 'new feature', weight: 1, test: has(/\b(feature|endpoint|api|page|screen|component|module|service|migration|schema|mod|plugin|integration|workflow|pipeline)s?\b/) },
+  { label: 'fixes a bug', weight: 1, test: has(/\b(fix|bug|broken|doesn'?t work|does not work|not working|fails?|failing|crash(es|ing)?|freez(e|es|ing)|hangs|flicker\w*|disappear\w*|stuck|incorrect(ly)?|unexpected(ly)?|when (i|you|we|users?|the user|someone) \w+)\b/) },
+  { label: 'review', weight: 2, test: has(/\b(review|audit)\b/) },
+  { label: 'needs care', weight: 1, test: has(/\b(carefully|thorough(ly)?|safely|make sure|don'?t break|do not break|production|security|vulnerab\w*|o?auth(entication|orization)?|sso|concurren\w*|performance|optimi[sz]\w*|algorithm|prove)\b/) },
+  { label: 'high stakes', weight: 2, test: has(/\b(data loss|los(e|ing) (any )?data|ledger|off by (a few )?(cents|pennies)|double[- ]charg\w*|charged twice|month[- ]end|irreversible)\b/) },
+  { label: 'asks why', weight: 3, test: has(WHY) },
+  { label: 'restructures code', weight: 2, test: has(/\b(refactor|restructure|re-?architect|migrate|rewrite|overhaul|redesign|upgrade|(split|break up|break apart|extract) .{0,40}\binto)\b/) },
+  { label: 'touches many files', weight: 2, test: has(/\b(across (the|all|every|multiple|several|many|\d+)|every (file|screen|component|test|controller|page)|(whole|entire) (codebase|app|project|repo)|codebase-wide|end[- ]to[- ]end)\b/) },
+  { label: 'swaps the stack', weight: 3, test: s => STACK_JUMP.test(s.prose) || STACK_SWAP.test(s.raw) },
+  { label: 'system design', weight: 4, test: has(/\b(architecture|system design|re-?architect|design (a|an|the) (\w+ )?(system|architecture|data model|protocol|platform|engine))\b/) },
+  { label: 'planning', weight: 3, test: has(/\b(design (a|an|the)|trade-?offs?|plan (the|a|an|out|for)|make a plan|epic|roadmap|strategy|evaluate (the )?options|pros and cons|recommend (one|an? (approach|option|library))|compare .{0,60}\b(approach|option|librar\w*|framework|architecture|strateg\w*)|should we (use|go with|switch|adopt|move))\b/) },
   { label: 'carries out a plan', weight: 3, test: s => carriesOutAPlan(s) },
-  { label: 'hard-to-pin bug', weight: 3, test: has(/\b(race condition|deadlock|flaky|intermittent(ly)?|heisenbug|memory leak|leaks memory|corrupt(ed|ion)|non-?deterministic|only (happens|fails|breaks) (in|on|when))\b/) },
-  { label: 'asks for deep thinking', weight: 4, test: has(/\b(ultrathink|think (really |very )?hard(er)?|think deeply|hardest|most capable|use fable)\b/) },
+  { label: 'hard-to-pin bug', weight: 3, test: has(/\b(race condition|deadlock|flaky|intermittent(ly)?|heisenbug|memory leak|leaks memory|starv(e|es|ation)|livelock|corrupt(ed|ion)|(a|the) race( (in|between|on|when|where)|$|[,.;])|races (between|in|on)|stale (data|reads?|values?|cache[ds]?|state|balances?|results?|responses?)|(returns?|reads?|serves?|come back|comes back) stale|non-?deterministic|only (happens|fails|breaks|shows up) (in|on|when|after)|only (in|on|under) (production|prod|staging|ci|load)|under load)\b/) },
+  { label: 'distributed systems', weight: 3, test: has(/\b(shard\w*|partition(ing|ed)?|replicat\w*|multi-region|consensus|eventual(ly)? consisten\w*|distributed (lock|transaction|system)s?)\b/) },
+  { label: 'asks for deep thinking', weight: 6, test: has(/\b(ultrathink|think (really |very )?hard(er)?|think deeply|hardest|most capable|use fable)\b/) },
 
   // Size
   { label: 'pasted code', weight: 1, test: s => /```/.test(s.raw) },
@@ -117,6 +131,8 @@ const FOLLOW_ON =/^(continue|go on|go ahead|keep going|carry on|proceed|yes|yep|
 
 /** Words a follow-on may carry after its opener ("continue with the tests"); more is a new instruction ("next, wire up the retry logic"). */
 const FOLLOW_ON_WORDS = 3
+/** A correction of the last answer is about the same work however long it runs: "no, use the existing mailer instead". */
+const CORRECTION = /^(no|nope|not quite|wrong|that'?s (wrong|not (it|right|what i (meant|asked|wanted))))\b/
 
 /** How many words are left once the opening follow-on phrase is taken off. */
 function followOnRest(s: Scan): number {
@@ -133,7 +149,13 @@ function fileCount(raw: string): number {
 
 function scan(text: string): Scan {
   const raw = text.trim()
-  const prose = raw.replace(/```[\s\S]*?(```|$)/g, ' ').toLowerCase()
+  // Fenced and inline code, quoted text and paths are what the work is about, not what it is.
+  const prose = raw
+    .replace(/```[\s\S]*?(```|$)/g, ' ')
+    .replace(/`[^`\n]*`/g, ' ')
+    .replace(/(^|[\s(])(["'])[^"'\n]{1,200}\2(?=[\s,.;:!?)]|$)/g, '$1 ')
+    .replace(/\S*[\\/]\S*/g, ' ')
+    .toLowerCase()
   const first = prose.trimStart().split('\n')[0]?.trim() ?? ''
 
   return { raw, prose, first, isShort: raw.length < 80 }
@@ -153,36 +175,74 @@ function excerpt(text: string): string {
   return line.length > 60 ? `${line.slice(0, 59)}…` : line
 }
 
+/** Points at the last prompt's work rather than naming its own: "add a test for it", "document the fix". */
+const BACK_REF = /\b(it|them|those|the (fix|change|changes|bug|issue|problem|error|feature|refactor)|(that|this) (fix|change|bug|issue|one)|same (thing|fix|change))\b|\b(this|that)[\s.!?]*$/
+/** Past this, a prompt says enough about its own work to be read alone. */
+const BACK_REF_CHARS = 160
+/** Tool errors in one turn from which it counts as a struggle. */
+const STRUGGLE_ERRORS = 3
+
+/** Why the last turn looks harder than its prompt read; null when it went as read. */
+export function struggleOf(last: LastTurn | null): string | null {
+  if (last === null) return null
+  if (last.ended === 'error') return 'the last turn ended in an error'
+  if (last.steps >= longRunLimit(last.tier, last.contextTokens)) return `the last turn ran long (${last.steps} requests)`
+  if (last.toolErrors >= STRUGGLE_ERRORS) return `the last turn hit ${last.toolErrors} tool errors`
+
+  return null
+}
+
+function stepTier(tier: Tier, by: number): Tier {
+  const at = Math.min(TIER_ORDER.length - 1, Math.max(0, TIER_ORDER.indexOf(tier) + by))
+
+  return TIER_ORDER[at] ?? tier
+}
+
 /**
- * Reads one prompt. A follow-on ("continue", "do it") inherits what the last
- * prompt was read as, since its words say nothing about the work.
+ * Reads one prompt in the light of the last. A follow-on ("continue", "do
+ * it") inherits what the last prompt was read as, since its words say nothing
+ * about the work. A short prompt that points back at that work ("add a test
+ * for it") is read no lower than a tier under it. Both go a tier higher when
+ * the last turn struggled: it ran long, kept failing, or died on an error.
  */
-export function assess(text: string, previous: Assessment | null): Assessment {
+export function assess(text: string, previous: Assessment | null, last: LastTurn | null = null): Assessment {
   const s = scan(text)
   const hit = SIGNALS.filter(signal => signal.test(s))
   const positive = hit.filter(h => h.weight > 0).reduce((n, h) => n + h.weight, 0)
   const negative = hit.filter(h => h.weight < 0).reduce((n, h) => n + h.weight, 0)
+  const struggle = previous === null ? null : struggleOf(last)
 
-  if (positive <= 1 && s.raw.length < 120 && FOLLOW_ON.test(s.first) && negative === 0 && followOnRest(s) <= FOLLOW_ON_WORDS) {
-    const tier = previous?.tier ?? 'standard'
+  const isCorrection = positive === 0 && CORRECTION.test(s.first)
+  if (positive <= 1 && s.raw.length < 120 && FOLLOW_ON.test(s.first) && negative === 0 && (isCorrection || followOnRest(s) <= FOLLOW_ON_WORDS)) {
+    const tier = previous === null ? 'standard' : stepTier(previous.tier, struggle === null ? 0 : 1)
 
     return {
       excerpt: excerpt(text),
       tier,
-      setup: previous?.setup ?? RECOMMENDED[tier],
-      reasons: ['follows on from the last prompt'],
+      setup: previous !== null && struggle === null ? previous.setup : RECOMMENDED[tier],
+      reasons: struggle === null ? ['follows on from the last prompt'] : ['follows on from the last prompt', struggle],
       isSure: false,
-      isFollowOn: true,
+      // Lifted by a struggle, the last reading no longer stands, so this one is advice of its own.
+      isFollowOn: struggle === null,
     }
   }
 
   // A short prompt with nothing in it to read is taken as light, never trivial.
   const short = s.isShort && hit.length === 0 ? -1 : 0
-  const tier = tierOf(positive + negative + short)
+  const own = tierOf(positive + negative + short)
   const reasons = hit.map(h => h.label)
   if (short !== 0) reasons.push('short')
+
+  // A chore or a question stands on its own words, whatever came before it.
+  const pointsBack = previous !== null && negative === 0 && s.prose.length <= BACK_REF_CHARS && BACK_REF.test(s.prose)
+  const floor = pointsBack ? stepTier(previous.tier, struggle === null ? -1 : 0) : own
+  const tier = TIER_ORDER.indexOf(floor) > TIER_ORDER.indexOf(own) ? floor : own
+  const isCarried = tier !== own
+  if (isCarried) reasons.unshift(...(struggle === null ? ['refers back to the last prompt'] : ['refers back to the last prompt', struggle]))
+
   const isConflicted = positive >= 2 && negative <= -2
-  const isSure = !isConflicted && (hit.length >= 2 || hit.some(h => Math.abs(h.weight) >= 3))
+  // A tier lifted by the last prompt is a guess about the work, never sure enough for auto to act on.
+  const isSure = !isCarried && !isConflicted && (hit.length >= 2 || hit.some(h => Math.abs(h.weight) >= 3))
 
   return {
     excerpt: excerpt(text),

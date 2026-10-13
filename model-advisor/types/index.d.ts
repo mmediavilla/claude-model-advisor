@@ -18,8 +18,57 @@ export type Assessment = {
   reasons: string[]
   /** Several signals that agree; auto acts on nothing less. */
   isSure: boolean
-  /** "continue", "do it": the prompt alone says nothing about the work. */
+  /** "continue", "do it": the prompt alone says nothing about the work, so the last reading stands. */
   isFollowOn: boolean
+}
+
+/** How the last main-loop turn went, read when it ended. */
+export type LastTurn = {
+  /** The tier the turn's prompt was read as. */
+  tier: Tier
+  /** Main-loop requests it made. */
+  steps: number
+  /** Tool calls that came back as errors: failing commands and tests, edits that missed. */
+  toolErrors: number
+  contextTokens: number
+  ended: 'answer' | 'aborted' | 'refusal' | 'error'
+}
+
+/** A prompt as read when it was sent, waiting for its turn to end before it is logged. */
+export type PendingEntry = {
+  /** When it was sent, ms since the epoch. */
+  at: number
+  /** The session it was sent in, so a replay reads each prompt after the one before it. */
+  session: string
+  /** Secrets masked, cut at 4,000 characters. */
+  prompt: string
+  /** Its length before the cut. */
+  chars: number
+  tier: Tier
+  reasons: string[]
+  isSure: boolean
+  isFollowOn: boolean
+  mode: Mode
+  /** The session's own model and effort when it was sent; null while unknown. */
+  own: { model: ModelKey; effort: Effort | null } | null
+  /** The tier the person says it was, from /advise label. */
+  label?: Tier
+}
+
+/** One prompt the advisor read and how its turn went: what calibration replays. */
+export type LogEntry = PendingEntry & {
+  /** What the turn ran on, the advisor's override or the session's own. */
+  ranOn: { model: ModelKey; effort: Effort | null } | null
+  /** Who chose the override it ran on; null when it ran on the session's own. */
+  chosenBy: 'you' | 'auto' | null
+  steps: number
+  toolErrors: number
+  contextTokens: number
+  ended: LastTurn['ended']
+  /** It ran past what its tier promised, by the mid-turn limit at the time. */
+  didRunLong: boolean
+  /** The band was hidden when the turn ended. */
+  wasHidden: boolean
 }
 
 declare module 'claude-code' {
@@ -37,8 +86,12 @@ declare module 'claude-code' {
       /** This session's mode, when /advise changed it from the configured one. */
       mode: Mode | null
       isHidden: boolean
-      /** Main-loop requests made so far in the current turn. */
-      run: { turnId: string | null; steps: number }
+      /** Main-loop requests and tool errors so far in the current turn. */
+      run: { turnId: string | null; steps: number; toolErrors: number }
+      /** How the last turn went, so the next prompt is read in its light. */
+      lastTurn: LastTurn | null
+      /** The prompt whose turn is running, logged when it ends. */
+      pending: PendingEntry | null
     }
   }
 }

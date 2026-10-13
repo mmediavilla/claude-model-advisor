@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { advise, assess, idFor, longRunLimit, midway, modelKeyOf, switchCost } from './assess'
+import type { LastTurn } from '../types'
+import { advise, assess, idFor, longRunLimit, midway, modelKeyOf, struggleOf, switchCost } from './assess'
 
 const tierOf = (text: string) => assess(text, null).tier
 
@@ -165,5 +166,37 @@ describe('a run that goes long', () => {
 
   test('knows nothing when the session model is unknown', () => {
     expect(midway(light, null, 50, 20_000)).toBeNull()
+  })
+})
+
+describe('the turn before', () => {
+  const hard = assess('why does the queue worker deadlock under load?', null)
+  const turn = (over: Partial<LastTurn>): LastTurn => ({ tier: 'involved', steps: 5, toolErrors: 0, contextTokens: 20_000, ended: 'answer', ...over })
+
+  test('struggled when it ran past its limit, failed three tools, or died on an error; not when it was only interrupted', () => {
+    expect(struggleOf(null)).toBeNull()
+    expect(struggleOf(turn({}))).toBeNull()
+    expect(struggleOf(turn({ steps: longRunLimit('involved', 20_000) }))).toBe('the last turn ran long (45 requests)')
+    expect(struggleOf(turn({ toolErrors: 2 }))).toBeNull()
+    expect(struggleOf(turn({ toolErrors: 3 }))).toBe('the last turn hit 3 tool errors')
+    expect(struggleOf(turn({ ended: 'error' }))).toBe('the last turn ended in an error')
+    expect(struggleOf(turn({ ended: 'aborted' }))).toBeNull()
+  })
+
+  test('a prompt lifted by the one before is never sure, so auto does not act on it', () => {
+    const a = assess('add a test for it', hard)
+    expect(a.tier).toBe('involved')
+    expect(a.reasons[0]).toBe('refers back to the last prompt')
+    expect(a.isSure).toBe(false)
+  })
+
+  test('a long prompt says enough to be read alone, and a first prompt has nothing to point back at', () => {
+    const long = `add a test for it that covers ${'the retry, the backoff and the dead letter queue, '.repeat(3)}`
+    expect(assess(long, hard).reasons).not.toContain('refers back to the last prompt')
+    expect(assess('add a test for it', null).tier).toBe('standard')
+  })
+
+  test('a struggle with no previous prompt changes nothing', () => {
+    expect(assess('try again', null, turn({ ended: 'error' })).tier).toBe('standard')
   })
 })
