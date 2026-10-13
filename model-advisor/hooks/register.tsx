@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Assessment, Mode, SessionSetup, Setup } from '../types'
-import { advise, assess, effortOf, idFor, kTokens, midway, modelKeyOf, setupLabel, TIER_LABEL } from './assess'
+import { advise, assess, effortOf, idFor, kTokens, midway, modelKeyOf, setupLabel, struggleOf, TIER_LABEL } from './assess'
 import type { Current } from './assess'
 import { midwayVerdict, verdict } from './words'
 
@@ -13,13 +13,16 @@ const session = atom({ plugin: 'model-advisor', key: 'session' } as const, null)
 const contextTokens = atom({ plugin: 'model-advisor', key: 'contextTokens' } as const, 0)
 const sessionMode = atom({ plugin: 'model-advisor', key: 'mode' } as const, null)
 const isHidden = atom({ plugin: 'model-advisor', key: 'isHidden' } as const, false)
-const run = atom({ plugin: 'model-advisor', key: 'run' } as const, { turnId: null, steps: 0 })
+const run = atom({ plugin: 'model-advisor', key: 'run' } as const, { turnId: null, steps: 0, toolErrors: 0 })
+const lastTurn = atom({ plugin: 'model-advisor', key: 'lastTurn' } as const, null)
 
 /** Prompts a person wrote; a notification, a routine or a plugin's prompt is not judged. */
 const PEOPLE = new Set(['composer', 'bridge', 'sdk'])
 const MODES: readonly Mode[] = ['suggest', 'auto', 'off']
 
 type $ = EngineInterface
+
+const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`
 
 async function modeOf($: $, configured: Mode): Promise<Mode> {
   return (await read($, sessionMode)) ?? configured
@@ -54,17 +57,21 @@ async function choose($: $, setup: Setup | null, by: 'you' | 'auto') {
  * Auto goes cheaper only when the reading is sure, the prompt says what the
  * work is, and the rough saving beats the re-cache; anything else runs on
  * the session's own setup. It never goes above it, and never undoes a
- * choice you made yourself. A follow-on keeps whatever the last prompt ran on.
+ * choice you made yourself. A follow-on keeps whatever the last prompt ran
+ * on, unless the last turn struggled. After a turn that struggled, only a
+ * chore goes cheaper.
  */
 async function autoChoose($: $, a: Assessment) {
   const chosen = await read($, override)
   if (chosen?.by === 'you' || a.isFollowOn) return
+  const struggle = struggleOf(await read($, lastTurn))
   const own = await ownOf($)
   if (own === null) return
 
   const advice = advise(a, own, await read($, contextTokens))
   const isThereAlready = chosen !== null && chosen.model === a.setup.model && chosen.effort === a.setup.effort
-  const isTaken = advice.kind === 'cheaper' && a.isSure && (isThereAlready || advice.isWorthIt)
+  const isHeld = struggle !== null && a.tier !== 'trivial'
+  const isTaken = !isHeld && advice.kind === 'cheaper' && a.isSure && (isThereAlready || advice.isWorthIt)
   if (isTaken ? isThereAlready : chosen === null) return
   await choose($, isTaken ? a.setup : null, 'auto')
 }
@@ -90,6 +97,17 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // A /clear starts a fresh conversation: nothing before it says anything about the next prompt.
+  on('session.end', async ($, e, next) => {
+    if (e.reason === 'clear') {
+      await update($, sent, () => null)
+      await update($, draft, () => null)
+      await update($, lastTurn, () => null)
+    }
+
+    return next(e)
+  })
+
   on('prompt.edit', async ($, e, next) => {
     const box = await next(e)
     if ((await modeOf($, configured)) === 'off') return box
@@ -102,7 +120,7 @@ export const register: Register = (on, options) => {
       return box
     }
 
-    const a = assess(text, await read($, sent))
+    const a = assess(text, await read($, sent), await read($, lastTurn))
     const isSame = was !== null && was.tier === a.tier && was.isFollowOn === a.isFollowOn && was.reasons.join() === a.reasons.join()
     if (!isSame) await update($, draft, () => a)
 
@@ -113,11 +131,11 @@ export const register: Register = (on, options) => {
     const mode = await modeOf($, configured)
     if (mode === 'off' || !PEOPLE.has(e.origin.kind) || e.text.trim().startsWith('/')) return next(e)
 
-    const a = assess(e.text, await read($, sent))
+    const a = assess(e.text, await read($, sent), await read($, lastTurn))
     await update($, sent, () => a)
     await update($, draft, () => null)
     await update($, isHidden, () => false)
-    await update($, run, () => ({ turnId: null, steps: 0 }))
+    await update($, run, () => ({ turnId: null, steps: 0, toolErrors: 0 }))
     if (mode === 'auto') await autoChoose($, a)
 
     return next(e)
@@ -127,7 +145,7 @@ export const register: Register = (on, options) => {
   on('turn.step', async function* ($, e, next) {
     if (e.agentId !== undefined) return yield* next(e)
 
-    await update($, run, r => ({ turnId: e.turnId, steps: r.turnId === e.turnId ? r.steps + 1 : 1 }))
+    await update($, run, r => (r.turnId === e.turnId ? { ...r, steps: r.steps + 1 } : { turnId: e.turnId, steps: 1, toolErrors: 0 }))
 
     const own: SessionSetup = { model: e.model, effort: effortOf(e.effort) }
     const was = await read($, session)
@@ -143,6 +161,27 @@ export const register: Register = (on, options) => {
     }
 
     return result
+  })
+
+  // Failing commands and tests, edits that missed: how hard the turn is going, read off the main loop's tools.
+  on('tool.call', async ($, e, next) => {
+    const result = await next(e)
+    if (e.agentId === undefined && result.isError === true && (await modeOf($, configured)) !== 'off') {
+      await update($, run, r => ({ ...r, toolErrors: r.toolErrors + 1 }))
+    }
+
+    return result
+  }).catch(($, e, next) => next(e))
+
+  on('turn.complete', async ($, e, next) => {
+    const a = await read($, sent)
+    if (e.agentId === undefined && a !== null && (await modeOf($, configured)) !== 'off') {
+      const r = await read($, run)
+      const context = await read($, contextTokens)
+      await update($, lastTurn, () => ({ tier: a.tier, steps: r.steps, toolErrors: r.toolErrors, contextTokens: context, ended: e.reason }))
+    }
+
+    return next(e)
   })
 
   on('command.run', { command: 'advise' }, async ($, e) => {
@@ -169,10 +208,12 @@ export const register: Register = (on, options) => {
       return { text: `Sending as ${setupLabel(a.setup.model, a.setup.effort)} until /advise reset.` }
     }
 
-    const a = arg.length > 0 ? assess(arg, await read($, sent)) : await read($, sent)
+    const last = await read($, lastTurn)
+    const a = arg.length > 0 ? assess(arg, await read($, sent), last) : await read($, sent)
     if (a === null) return { text: 'Nothing assessed yet: send a prompt, or /advise <prompt>.' }
     const v = verdict(a, await currentOf($), await read($, contextTokens))
     const context = await read($, contextTokens)
+    const struggle = struggleOf(last)
 
     return {
       text: [
@@ -180,6 +221,7 @@ export const register: Register = (on, options) => {
         v.head,
         v.detail,
         context > 0 ? `Context now: ${kTokens(context)} tokens.` : '',
+        last === null ? '' : `Last turn: ${count(last.steps, 'request')}, ${count(last.toolErrors, 'tool error')}${struggle === null ? '' : ', harder than it read'}.`,
         `Mode: ${await modeOf($, configured)}.${v.offer === null ? '' : ' /advise use to switch, /advise reset to go back.'}`,
       ]
         .filter(Boolean)

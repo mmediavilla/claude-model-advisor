@@ -2,7 +2,7 @@
 // asked: a judge that spends tokens on every prompt to save tokens is the
 // wrong way round, and a regex can run on every keystroke.
 
-import type { Assessment, Effort, ModelKey, Setup, Tier } from '../types'
+import type { Assessment, Effort, LastTurn, ModelKey, Setup, Tier } from '../types'
 
 /**
  * List prices per million tokens (the Claude API skill's table, 2026-10-06).
@@ -175,37 +175,74 @@ function excerpt(text: string): string {
   return line.length > 60 ? `${line.slice(0, 59)}…` : line
 }
 
+/** Points at the last prompt's work rather than naming its own: "add a test for it", "document the fix". */
+const BACK_REF = /\b(it|them|those|the (fix|change|changes|bug|issue|problem|error|feature|refactor)|(that|this) (fix|change|bug|issue|one)|same (thing|fix|change))\b|\b(this|that)[\s.!?]*$/
+/** Past this, a prompt says enough about its own work to be read alone. */
+const BACK_REF_CHARS = 160
+/** Tool errors in one turn from which it counts as a struggle. */
+const STRUGGLE_ERRORS = 3
+
+/** Why the last turn looks harder than its prompt read; null when it went as read. */
+export function struggleOf(last: LastTurn | null): string | null {
+  if (last === null) return null
+  if (last.ended === 'error') return 'the last turn ended in an error'
+  if (last.steps >= longRunLimit(last.tier, last.contextTokens)) return `the last turn ran long (${last.steps} requests)`
+  if (last.toolErrors >= STRUGGLE_ERRORS) return `the last turn hit ${last.toolErrors} tool errors`
+
+  return null
+}
+
+function stepTier(tier: Tier, by: number): Tier {
+  const at = Math.min(TIER_ORDER.length - 1, Math.max(0, TIER_ORDER.indexOf(tier) + by))
+
+  return TIER_ORDER[at] ?? tier
+}
+
 /**
- * Reads one prompt. A follow-on ("continue", "do it") inherits what the last
- * prompt was read as, since its words say nothing about the work.
+ * Reads one prompt in the light of the last. A follow-on ("continue", "do
+ * it") inherits what the last prompt was read as, since its words say nothing
+ * about the work. A short prompt that points back at that work ("add a test
+ * for it") is read no lower than a tier under it. Both go a tier higher when
+ * the last turn struggled: it ran long, kept failing, or died on an error.
  */
-export function assess(text: string, previous: Assessment | null): Assessment {
+export function assess(text: string, previous: Assessment | null, last: LastTurn | null = null): Assessment {
   const s = scan(text)
   const hit = SIGNALS.filter(signal => signal.test(s))
   const positive = hit.filter(h => h.weight > 0).reduce((n, h) => n + h.weight, 0)
   const negative = hit.filter(h => h.weight < 0).reduce((n, h) => n + h.weight, 0)
+  const struggle = previous === null ? null : struggleOf(last)
 
   const isCorrection = positive === 0 && CORRECTION.test(s.first)
   if (positive <= 1 && s.raw.length < 120 && FOLLOW_ON.test(s.first) && negative === 0 && (isCorrection || followOnRest(s) <= FOLLOW_ON_WORDS)) {
-    const tier = previous?.tier ?? 'standard'
+    const tier = previous === null ? 'standard' : stepTier(previous.tier, struggle === null ? 0 : 1)
 
     return {
       excerpt: excerpt(text),
       tier,
-      setup: previous?.setup ?? RECOMMENDED[tier],
-      reasons: ['follows on from the last prompt'],
+      setup: previous !== null && struggle === null ? previous.setup : RECOMMENDED[tier],
+      reasons: struggle === null ? ['follows on from the last prompt'] : ['follows on from the last prompt', struggle],
       isSure: false,
-      isFollowOn: true,
+      // Lifted by a struggle, the last reading no longer stands, so this one is advice of its own.
+      isFollowOn: struggle === null,
     }
   }
 
   // A short prompt with nothing in it to read is taken as light, never trivial.
   const short = s.isShort && hit.length === 0 ? -1 : 0
-  const tier = tierOf(positive + negative + short)
+  const own = tierOf(positive + negative + short)
   const reasons = hit.map(h => h.label)
   if (short !== 0) reasons.push('short')
+
+  // A chore or a question stands on its own words, whatever came before it.
+  const pointsBack = previous !== null && negative === 0 && s.prose.length <= BACK_REF_CHARS && BACK_REF.test(s.prose)
+  const floor = pointsBack ? stepTier(previous.tier, struggle === null ? -1 : 0) : own
+  const tier = TIER_ORDER.indexOf(floor) > TIER_ORDER.indexOf(own) ? floor : own
+  const isCarried = tier !== own
+  if (isCarried) reasons.unshift(...(struggle === null ? ['refers back to the last prompt'] : ['refers back to the last prompt', struggle]))
+
   const isConflicted = positive >= 2 && negative <= -2
-  const isSure = !isConflicted && (hit.length >= 2 || hit.some(h => Math.abs(h.weight) >= 3))
+  // A tier lifted by the last prompt is a guess about the work, never sure enough for auto to act on.
+  const isSure = !isCarried && !isConflicted && (hit.length >= 2 || hit.some(h => Math.abs(h.weight) >= 3))
 
   return {
     excerpt: excerpt(text),

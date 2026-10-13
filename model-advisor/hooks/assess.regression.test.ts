@@ -1,12 +1,19 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { Tier } from '../types'
-import { assess, EFFORTS, RECOMMENDED, turnCost } from './assess'
+import type { Assessment, LastTurn, Tier } from '../types'
+import { assess, EFFORTS, longRunLimit, RECOMMENDED, turnCost } from './assess'
 import { CASES, FOLLOW_ONS, FRESH, HOLDOUT, MISREADS } from './assess.corpus'
 
 const TIERS: readonly Tier[] = ['trivial', 'light', 'standard', 'involved', 'deep']
 const RANK = { haiku: 0, sonnet: 1, opus: 2, fable: 3 } as const
 const ALL = [...CASES, ...HOLDOUT, ...FRESH]
+
+/** The turn a prompt ran: as its tier promised, or long enough to count as a struggle. */
+function turnAfter(a: Assessment, struggled: boolean): LastTurn {
+  const steps = struggled ? longRunLimit(a.tier, 50_000) : 2
+
+  return { tier: a.tier, steps, toolErrors: 0, contextTokens: 50_000, ended: 'answer' }
+}
 
 describe('the labelled corpus', () => {
   test('reads each prompt as labelled, but for the misreads on record', () => {
@@ -27,13 +34,14 @@ describe('the labelled corpus', () => {
     expect(tooCheap.map(c => c.prompt)).toEqual([])
   })
 
-  test('a follow-on or a correction carries the last reading; a new instruction does not', () => {
+  test('a prompt after another is read in its light: follow-ons, corrections, prompts that point back, and a turn that struggled', () => {
     const got = FOLLOW_ONS.map(f => {
-      const a = assess(f.prompt, assess(f.after, null))
+      const after = assess(f.after, null)
+      const a = assess(f.prompt, after, turnAfter(after, f.struggled === true))
 
-      return [f.prompt, a.tier, a.isFollowOn]
+      return [f.after, f.prompt, f.struggled === true, a.tier, a.isFollowOn]
     })
-    expect(got).toEqual(FOLLOW_ONS.map(f => [f.prompt, f.tier, f.isFollowOn]))
+    expect(got).toEqual(FOLLOW_ONS.map(f => [f.after, f.prompt, f.struggled === true, f.tier, f.isFollowOn]))
   })
 })
 

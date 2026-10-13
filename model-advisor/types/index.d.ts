@@ -18,8 +18,20 @@ export type Assessment = {
   reasons: string[]
   /** Several signals that agree; auto acts on nothing less. */
   isSure: boolean
-  /** "continue", "do it": the prompt alone says nothing about the work. */
+  /** "continue", "do it": the prompt alone says nothing about the work, so the last reading stands. */
   isFollowOn: boolean
+}
+
+/** How the last main-loop turn went, read when it ended. */
+export type LastTurn = {
+  /** The tier the turn's prompt was read as. */
+  tier: Tier
+  /** Main-loop requests it made. */
+  steps: number
+  /** Tool calls that came back as errors: failing commands and tests, edits that missed. */
+  toolErrors: number
+  contextTokens: number
+  ended: 'answer' | 'aborted' | 'refusal' | 'error'
 }
 
 declare module 'claude-code' {
@@ -37,8 +49,10 @@ declare module 'claude-code' {
       /** This session's mode, when /advise changed it from the configured one. */
       mode: Mode | null
       isHidden: boolean
-      /** Main-loop requests made so far in the current turn. */
-      run: { turnId: string | null; steps: number }
+      /** Main-loop requests and tool errors so far in the current turn. */
+      run: { turnId: string | null; steps: number; toolErrors: number }
+      /** How the last turn went, so the next prompt is read in its light. */
+      lastTurn: LastTurn | null
     }
   }
 }

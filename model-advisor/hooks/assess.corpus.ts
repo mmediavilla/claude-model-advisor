@@ -15,7 +15,8 @@
 import type { Tier } from '../types'
 
 export type Case = { prompt: string; tier: Tier }
-export type FollowOnCase = { after: string; prompt: string; tier: Tier; isFollowOn: boolean }
+/** `struggled`: the turn after `after` ran long, kept failing, or died on an error. */
+export type FollowOnCase = { after: string; prompt: string; tier: Tier; isFollowOn: boolean; struggled?: boolean }
 
 export const CASES: readonly Case[] = [
   // trivial
@@ -234,6 +235,21 @@ export const FOLLOW_ONS: readonly FollowOnCase[] = [
   { after: 'fix the typo in README.md', prompt: 'thanks', tier: 'trivial', isFollowOn: false },
   { after: 'refactor the auth flow across all controllers', prompt: 'next, wire up the retry logic', tier: 'standard', isFollowOn: false },
   { after: 'thanks!', prompt: 'next phase start', tier: 'involved', isFollowOn: false },
+
+  // A short prompt that points back at the last prompt's work
+  { after: 'why does the queue worker deadlock under load?', prompt: 'add a test for it', tier: 'involved', isFollowOn: false },
+  { after: 'refactor the auth flow across all controllers, make sure nothing breaks', prompt: 'now write tests for it', tier: 'standard', isFollowOn: false },
+  { after: 'add a dark mode toggle to the settings page', prompt: 'document the change in the README', tier: 'light', isFollowOn: false },
+  { after: 'fix the typo in README.md', prompt: 'add a test for it', tier: 'standard', isFollowOn: false },
+  // A chore or a question stands on its own words
+  { after: 'why does the queue worker deadlock under load?', prompt: 'commit this and push', tier: 'trivial', isFollowOn: false },
+  { after: 'why does the queue worker deadlock under load?', prompt: 'what does it return?', tier: 'light', isFollowOn: false },
+
+  // After a turn that struggled, the work is a tier harder than it read
+  { after: 'fix the typo in README.md', prompt: 'try again', tier: 'standard', isFollowOn: false, struggled: true },
+  { after: 'why does the queue worker deadlock under load?', prompt: 'add a test for it', tier: 'deep', isFollowOn: false, struggled: true },
+  { after: 'refactor the auth flow across all controllers, make sure nothing breaks', prompt: 'now write tests for it', tier: 'involved', isFollowOn: false, struggled: true },
+  { after: 'refactor the auth flow across all controllers, make sure nothing breaks', prompt: 'commit this and push', tier: 'trivial', isFollowOn: false, struggled: true },
 ]
 
 /**

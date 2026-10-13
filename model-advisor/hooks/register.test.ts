@@ -15,6 +15,8 @@ function engine(on: On, contextTokens = 20_000): Sent[] {
   const sent: Sent[] = []
   on('prompt.submit', ($, e) => ({ text: e.text }))
   on('ui.status', () => ({ value: undefined }))
+  on('turn.complete', ($, e) => ({ text: e.answer }))
+  on('tool.call', () => ({ result: 'exit 1', text: 'exit 1', isError: true }))
   on('ui.render', { component: 'AbovePrompt' }, ($, e) => {
     const { Text } = $.ui.resolve(e)
 
@@ -52,6 +54,11 @@ async function step($: Engine, agentId?: string) {
 }
 
 const submit = ($: Engine, text: string) => $.prompt.submit({ text, wait: false, origin: { kind: 'composer' } })
+const finish = ($: Engine) => $.turn.complete({ turnId: 't', answer: '', durationMs: 1, isAborted: false, reason: 'answer' })
+/** A tool call that fails, in the main loop or, given an id, a subagent's. */
+const failingTool = ($: Engine, agentId?: string) => $.tool.call({ tool: 'Bash', command: 'npm test', ...(agentId ? { agentId } : {}) })
+const advise = ($: Engine, args = '') =>
+  $.command.run({ command: 'advise', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
 
 describe('suggest', () => {
   test('a light prompt on Opus at xhigh offers Sonnet at low, and Use sends the next request on it', async ($, on) => {
@@ -163,10 +170,88 @@ describe('auto', () => {
     const sent = engine(on)
     await step($)
     await submit($, 'there is a race condition in the queue worker, find the root cause')
-    await $.command.run({ command: 'advise', args: 'use', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+    await advise($, 'use')
     await submit($, 'commit this and push')
     await step($)
     expect(sent.at(-1)).toEqual({ model: 'claude-fable-5-1', effort: 'high' })
+  })
+})
+
+describe('the session so far', () => {
+  test('a short prompt that points back is read with the work before it', async ($, on) => {
+    engine(on)
+    await step($)
+    await submit($, 'why does the queue worker deadlock under load?')
+    await step($)
+    await finish($)
+    await submit($, 'add a test for it')
+
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect(await ui.find({ type: 'Text', text: /Involved: Opus 5\.5 · high would do/ })).toBeDefined()
+  })
+
+  test("failing tool calls in the main loop make a struggle, and the next follow-on a tier harder; a subagent's do not count", async ($, on) => {
+    engine(on)
+    await step($)
+    await submit($, 'fix the typo in README.md')
+    await step($)
+    for (let i = 0; i < 3; i++) await failingTool($)
+    await failingTool($, 'agent-1')
+    await finish($)
+    await submit($, 'try again')
+
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect(await ui.find({ type: 'Text', text: /Standard: Sonnet 5\.5 · medium would do/ })).toBeDefined()
+    expect((await advise($)).text).toContain('Last turn: 1 request, 3 tool errors, harder than it read.')
+  })
+
+  test('two failing tool calls are not a struggle', async ($, on) => {
+    engine(on)
+    await step($)
+    await submit($, 'fix the typo in README.md')
+    await step($)
+    for (let i = 0; i < 2; i++) await failingTool($)
+    await finish($)
+    await submit($, 'try again')
+
+    expect((await advise($)).text).toContain('Last turn: 1 request, 2 tool errors.')
+    expect(await (await $.ui.mount({ ...BAND, surface: 'terminal' })).find({ type: 'Text', text: /Follows on from the last prompt/ })).toBeDefined()
+  })
+
+  test('a /clear forgets the work before it', async ($, on) => {
+    engine(on)
+    on('session.end', ($, e) => ({ sessionId: 's' }))
+    await step($)
+    await submit($, 'why does the queue worker deadlock under load?')
+    await step($)
+    await finish($)
+    await $.session.end({ reason: 'clear', sessionId: 's', resume: { id: 's' } })
+    await submit($, 'add a test for it')
+
+    expect(await (await $.ui.mount({ ...BAND, surface: 'terminal' })).find({ type: 'Text', text: /Standard: Sonnet 5\.5 · medium would do/ })).toBeDefined()
+    expect((await advise($)).text).not.toContain('Last turn')
+  })
+
+  test("after a turn that ran long, auto goes back to the session's own setup, and until a turn goes as read only a chore goes cheap", { options: { mode: 'auto' } }, async ($, on) => {
+    const sent = engine(on)
+    await step($)
+    await submit($, 'fix the typo in README.md')
+    await step($)
+    expect(sent.at(-1)).toEqual({ model: 'claude-sonnet-5-5', effort: 'low' })
+    for (let i = 1; i < 12; i++) await step($)
+    await finish($)
+
+    await submit($, 'try again')
+    await step($)
+    expect(sent.at(-1)).toEqual({ model: 'claude-opus-5-5', effort: 'xhigh' })
+
+    await submit($, 'fix the typo in the footer')
+    await step($)
+    expect(sent.at(-1)).toEqual({ model: 'claude-opus-5-5', effort: 'xhigh' })
+
+    await submit($, 'commit this and push')
+    await step($)
+    expect(sent.at(-1)).toEqual({ model: 'claude-haiku-5-5', effort: 'low' })
   })
 })
 

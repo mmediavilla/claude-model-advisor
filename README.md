@@ -5,6 +5,11 @@ A Claude Code plugin that reads each prompt you send (free regex heuristics, no 
 - Shows a band above the prompt and a `/advise` command.
 - `mode` option: `suggest` (default), `auto`, or `off`.
 - Mid-turn check: flags long-running turns that may need a stronger or cheaper setup (suggest-only).
+- Reads each prompt in light of the session:
+  - A short prompt that points back at the last one ("add a test for it") is read no more than one tier below it.
+  - A turn that ran long, hit 3 or more tool errors, or ended in an error makes the next related prompt one tier harder.
+  - After such a turn, auto mode only moves chores to a cheaper setup, until a turn goes as expected.
+  - `/clear` forgets all of it. `/advise` shows how the last turn went.
 
 ## Install
 
