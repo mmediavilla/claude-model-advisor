@@ -1,9 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Assessment, Mode, SessionSetup, Setup } from '../types'
-import { advise, assess, effortOf, idFor, kTokens, midway, modelKeyOf, setupLabel, struggleOf, TIER_LABEL } from './assess'
+import type { Assessment, LastTurn, LogEntry, Mode, PendingEntry, SessionSetup, Setup } from '../types'
+import { advise, assess, effortOf, idFor, kTokens, longRunLimit, midway, modelKeyOf, setupLabel, struggleOf, TIER_LABEL } from './assess'
 import type { Current } from './assess'
+import { appended, entriesOf, isTier, jsonLines, labelReply, logPrompt, summary } from './log'
 import { midwayVerdict, verdict } from './words'
 
 const sent = atom({ plugin: 'model-advisor', key: 'sent' } as const, null)
@@ -15,6 +16,10 @@ const sessionMode = atom({ plugin: 'model-advisor', key: 'mode' } as const, null
 const isHidden = atom({ plugin: 'model-advisor', key: 'isHidden' } as const, false)
 const run = atom({ plugin: 'model-advisor', key: 'run' } as const, { turnId: null, steps: 0, toolErrors: 0 })
 const lastTurn = atom({ plugin: 'model-advisor', key: 'lastTurn' } as const, null)
+const pending = atom({ plugin: 'model-advisor', key: 'pending' } as const, null)
+
+/** The store key the log is kept under. */
+const LOG = 'log'
 
 /** Prompts a person wrote; a notification, a routine or a plugin's prompt is not judged. */
 const PEOPLE = new Set(['composer', 'bridge', 'sdk'])
@@ -76,14 +81,50 @@ async function autoChoose($: $, a: Assessment) {
   await choose($, isTaken ? a.setup : null, 'auto')
 }
 
+/** Holds a person's prompt as read until its turn ends and says how it went. */
+async function hold($: $, a: Assessment, text: string, mode: Mode) {
+  const entry: PendingEntry = {
+    at: await $.clock.now(),
+    session: await $.session.id(),
+    ...logPrompt(text),
+    tier: a.tier,
+    reasons: a.reasons,
+    isSure: a.isSure,
+    isFollowOn: a.isFollowOn,
+    mode,
+    own: await ownOf($),
+  }
+  await update($, pending, () => entry)
+}
+
+/** Logs a held prompt with how its turn went, keeping the newest entries. */
+async function logTurn($: $, held: PendingEntry, ended: LastTurn['ended']) {
+  const r = await read($, run)
+  const context = await read($, contextTokens)
+  const chosen = await read($, override)
+  const entry: LogEntry = {
+    ...held,
+    ranOn: chosen === null ? await ownOf($) : { model: chosen.model, effort: chosen.effort },
+    chosenBy: chosen?.by ?? null,
+    steps: r.steps,
+    toolErrors: r.toolErrors,
+    contextTokens: context,
+    ended,
+    didRunLong: r.steps >= longRunLimit(held.tier, context),
+    wasHidden: await read($, isHidden),
+  }
+  await $.store.set(LOG, appended(entriesOf(await $.store.get(LOG)), entry))
+}
+
 export const register: Register = (on, options) => {
   const configured: Mode = MODES.includes(options.mode as Mode) ? (options.mode as Mode) : 'suggest'
+  const isLogging = options.log !== 'off'
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'advise',
-      description: 'Model advisor: judge a prompt without sending it, or set suggest, auto, off, use, reset',
-      argumentHint: '[prompt | suggest | auto | off | use | reset]',
+      description: 'Model advisor: judge a prompt without sending it; set suggest, auto, off, use, reset; or log, label, export',
+      argumentHint: '[prompt | suggest | auto | off | use | reset | log | label <tier> | export [path]]',
     })
 
     if ((await read($, session)) === null) {
@@ -103,6 +144,7 @@ export const register: Register = (on, options) => {
       await update($, sent, () => null)
       await update($, draft, () => null)
       await update($, lastTurn, () => null)
+      await update($, pending, () => null)
     }
 
     return next(e)
@@ -136,7 +178,10 @@ export const register: Register = (on, options) => {
     await update($, draft, () => null)
     await update($, isHidden, () => false)
     await update($, run, () => ({ turnId: null, steps: 0, toolErrors: 0 }))
+    await update($, pending, () => null)
     if (mode === 'auto') await autoChoose($, a)
+    // The log is a side line: whatever fails there, the advice and the prompt go on.
+    if (isLogging) await hold($, a, e.text, mode).catch(() => undefined)
 
     return next(e)
   })
@@ -180,6 +225,11 @@ export const register: Register = (on, options) => {
       const context = await read($, contextTokens)
       await update($, lastTurn, () => ({ tier: a.tier, steps: r.steps, toolErrors: r.toolErrors, contextTokens: context, ended: e.reason }))
     }
+    const held = e.agentId === undefined ? await read($, pending) : null
+    if (held !== null) {
+      await update($, pending, () => null)
+      await logTurn($, held, e.reason).catch(() => undefined)
+    }
 
     return next(e)
   })
@@ -199,6 +249,41 @@ export const register: Register = (on, options) => {
       const own = await ownOf($)
 
       return { text: `Back to the session's own setup${own === null ? '' : `, ${setupLabel(own.model, own.effort)}`}.` }
+    }
+    if (word === 'log') return { text: summary(entriesOf(await $.store.get(LOG)), isLogging) }
+    if (word === 'log clear') {
+      const n = entriesOf(await $.store.get(LOG)).length
+      await $.store.delete(LOG)
+
+      return { text: `Cleared ${count(n, 'logged prompt')}.` }
+    }
+    const label = word.match(/^label\s+(\S+)$/)?.[1]
+    if (label !== undefined) {
+      if (!isTier(label)) return { text: 'Label with a tier: trivial, light, standard, involved or deep.' }
+      const held = await read($, pending)
+      if (held !== null) {
+        await update($, pending, () => ({ ...held, label }))
+
+        return { text: labelReply(held, label) }
+      }
+      const log = entriesOf(await $.store.get(LOG))
+      const last = log.at(-1)
+      if (last === undefined) return { text: 'Nothing logged to label yet.' }
+      await $.store.set(LOG, [...log.slice(0, -1), { ...last, label }])
+
+      return { text: labelReply(last, label) }
+    }
+    // "export the CSV as JSON" is a prompt to judge; a bare export, or one naming a path, is the command.
+    const exported = arg.match(/^export(?:\s+(.+))?$/i)
+    const named = exported?.[1]?.trim()
+    if (exported !== null && (named === undefined || /[\\/]|\.jsonl?$/i.test(named))) {
+      const home = named === undefined ? ((await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE'))) : undefined
+      const path = named ?? (home === undefined ? null : `${home}/.claude/model-advisor-log.jsonl`)
+      if (path === null) return { text: 'Say where to save it: /advise export <path>.jsonl' }
+      const log = entriesOf(await $.store.get(LOG))
+      await $.fs.write(path, jsonLines(log))
+
+      return { text: `Saved ${count(log.length, 'logged prompt')} to ${path}.\nCalibrate with: npx tsx scripts/calibrate.ts ${path}` }
     }
     if (word === 'use') {
       const a = (await read($, draft)) ?? (await read($, sent))
