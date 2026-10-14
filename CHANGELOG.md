@@ -2,6 +2,12 @@
 
 All notable changes to model-advisor. Versions follow [Semantic Versioning](https://semver.org). Below 1.0, a minor version may change how prompts are read or what the log keeps.
 
+## [0.2.1] - 2026-10-14
+
+### Fixed
+
+- The band above the prompt no longer hides other mods that draw there. The advisor's advice sits on top, and whatever the other mods and Claude Code draw stays under it.
+
 ## [0.2.0] - 2026-10-13
 
 First public release.
