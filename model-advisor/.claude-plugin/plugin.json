@@ -1,6 +1,6 @@
 {
   "name": "model-advisor",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Reads each prompt you send and says which model and effort would do it, so you stop paying Opus at xhigh for a commit message.",
   "author": {
     "name": "MC Mediavilla"

@@ -328,6 +328,8 @@ export const register: Register = (on, options) => {
     const v = m !== null && now !== null ? midwayVerdict(m, a, now, context) : verdict(a, now, context)
     const offer = v.offer !== null && (chosen === null || chosen.model !== v.offer.model || chosen.effort !== v.offer.effort) ? v.offer : null
     const tone = v.tone === 'warn' ? 'warning' : v.tone === 'save' ? 'success' : undefined
+    // The band is shared: the advisor sits on top and whatever the other mods and the engine draw stays under it.
+    const below = await next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
 
     return (
@@ -363,6 +365,7 @@ export const register: Register = (on, options) => {
             {v.tone !== 'fits' && <Button key="hide" label="Hide" onPress={() => update($, isHidden, () => true)} />}
           </Box>
         )}
+        {below}
       </Box>
     )
   })

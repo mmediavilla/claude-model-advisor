@@ -101,6 +101,19 @@ describe('suggest', () => {
     expect(sent.at(-1)).toEqual({ model: 'claude-opus-5-5', effort: 'xhigh' })
   })
 
+  test('the advice sits on top of the band and keeps what the other mods draw under it', async ($, on) => {
+    engine(on)
+    expect((await (await $.ui.mount({ ...BAND, surface: 'terminal' })).findAll({ type: 'Text' })).map(t => t.text)).toEqual(['the engine band'])
+
+    await step($)
+    await submit($, 'fix the typo in README.md')
+    for (const surface of ['terminal', 'desktop'] as const) {
+      const texts = (await (await $.ui.mount({ ...BAND, surface })).findAll({ type: 'Text' })).map(t => t.text)
+      expect(texts[0]).toMatch(/Sonnet 5\.5 · low would do/)
+      expect(texts.at(-1)).toBe('the engine band')
+    }
+  })
+
   test('Hide puts the band away until the next prompt', async ($, on) => {
     engine(on)
     await step($)
