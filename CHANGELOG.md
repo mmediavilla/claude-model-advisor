@@ -7,7 +7,7 @@ All notable changes to model-advisor. Versions follow [Semantic Versioning](http
 ### Changed
 
 - The band offers a cheaper setup only when the switch pays for itself. A switch re-caches the whole conversation on the new model, so on a long session a one-prompt switch often costs more than it saves. The band then says it is staying put, without a button. `/advise` says what the re-cache would cost.
-- A stronger model or a higher effort is still offered whatever the re-cache costs, since it is about the work going right.
+- A stronger model or a higher effort is offered only when the re-cache is no more than a quarter of what the turn costs on it. On a long session, a one-prompt step up from Opus at medium to high is no longer offered.
 
 ## [0.2.1] - 2026-10-14
 

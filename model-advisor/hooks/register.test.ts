@@ -126,7 +126,7 @@ describe('suggest', () => {
     expect((await advise($)).text).toMatch(/Sonnet 5\.5 · low would do it, but switching re-caches 200k tokens \(≈\$0\.46\), more than a turn like this would save/)
   })
 
-  test('on a big context a stronger model is still offered', async ($, on) => {
+  test('on a big context a stronger model is still offered when the re-cache is small next to the turn', async ($, on) => {
     engine(on, 200_000)
     await step($)
     await submit($, 'ultrathink: there is a race condition in the ledger that only happens in production, find the root cause')

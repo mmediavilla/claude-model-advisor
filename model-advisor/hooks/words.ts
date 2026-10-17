@@ -1,7 +1,7 @@
 // What the band and /advise say, from the same reading, so the two never disagree.
 
 import type { Assessment, Setup } from '../types'
-import { advise, kTokens, MODEL_RANK, money, setupLabel, TIER_LABEL } from './assess'
+import { advise, kTokens, money, setupLabel, TIER_LABEL } from './assess'
 import type { Current, Midway } from './assess'
 
 export type Tone = 'fits' | 'save' | 'warn' | 'note'
@@ -72,10 +72,17 @@ export function verdict(a: Assessment, current: Current | null, contextTokens: n
     return { tone: 'fits', head: `✓ ${now} fits this ${tier.toLowerCase()} prompt`, detail: reasonList(a), offer: null }
   }
 
-  // A switch for the money has to pay for its re-cache, or the band would offer one on every prompt of a long session.
-  // A stronger model or effort is about the work going right, so it is offered whatever the re-cache costs.
-  const isStepUp = advice.kind === 'stronger' || MODEL_RANK[advice.rec.model] > MODEL_RANK[current.model]
-  if (!isStepUp && !advice.isWorthIt && contextTokens > 0) {
+  // A switch has to be worth its re-cache, or the band would offer one on every prompt of a long session.
+  if (!advice.isWorthIt && contextTokens > 0) {
+    const recache = `switching re-caches ${kTokens(contextTokens)} tokens (≈${money(advice.switch)})`
+    if (advice.isStepUp) {
+      return {
+        tone: 'fits',
+        head: `✓ Staying on ${now} · a switch costs too much next to this ${tier.toLowerCase()} prompt`,
+        detail: `${rec} may do it better, but ${recache}, over a quarter of a turn like this on it (≈${money(advice.costRec)})`,
+        offer: null,
+      }
+    }
     const saving =
       advice.costNow === null
         ? 'and without the current effort the saving cannot be priced'
@@ -84,7 +91,7 @@ export function verdict(a: Assessment, current: Current | null, contextTokens: n
     return {
       tone: 'fits',
       head: `✓ Staying on ${now} · a switch costs more than this ${tier.toLowerCase()} prompt saves`,
-      detail: `${rec} would do it, but switching re-caches ${kTokens(contextTokens)} tokens (≈${money(advice.switch)}), ${saving}`,
+      detail: `${rec} would do it, but ${recache}, ${saving}`,
       offer: null,
     }
   }
