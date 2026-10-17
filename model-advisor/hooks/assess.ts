@@ -16,7 +16,7 @@ export const MODELS = {
   fable: { id: 'claude-fable-5-1', label: 'Fable 5.1', input: 10, output: 50, cacheRead: 0.25 },
 } as const satisfies Record<ModelKey, { id: string; label: string; input: number; output: number; cacheRead: number }>
 
-const MODEL_RANK: Record<ModelKey, number> = { haiku: 0, sonnet: 1, opus: 2, fable: 3 }
+export const MODEL_RANK: Record<ModelKey, number> = { haiku: 0, sonnet: 1, opus: 2, fable: 3 }
 export const EFFORTS: readonly Effort[] = ['low', 'medium', 'high', 'xhigh', 'max']
 
 export const RECOMMENDED: Record<Tier, Setup> = {

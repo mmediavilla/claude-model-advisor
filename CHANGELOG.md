@@ -2,6 +2,13 @@
 
 All notable changes to model-advisor. Versions follow [Semantic Versioning](https://semver.org). Below 1.0, a minor version may change how prompts are read or what the log keeps.
 
+## [0.3.0] - 2026-10-17
+
+### Changed
+
+- The band offers a cheaper setup only when the switch pays for itself. A switch re-caches the whole conversation on the new model, so on a long session a one-prompt switch often costs more than it saves. The band then says it is staying put, without a button. `/advise` says what the re-cache would cost.
+- A stronger model or a higher effort is still offered whatever the re-cache costs, since it is about the work going right.
+
 ## [0.2.1] - 2026-10-14
 
 ### Fixed

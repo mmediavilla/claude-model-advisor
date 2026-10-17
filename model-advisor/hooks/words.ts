@@ -1,7 +1,7 @@
 // What the band and /advise say, from the same reading, so the two never disagree.
 
 import type { Assessment, Setup } from '../types'
-import { advise, kTokens, money, setupLabel, TIER_LABEL } from './assess'
+import { advise, kTokens, MODEL_RANK, money, setupLabel, TIER_LABEL } from './assess'
 import type { Current, Midway } from './assess'
 
 export type Tone = 'fits' | 'save' | 'warn' | 'note'
@@ -72,6 +72,23 @@ export function verdict(a: Assessment, current: Current | null, contextTokens: n
     return { tone: 'fits', head: `✓ ${now} fits this ${tier.toLowerCase()} prompt`, detail: reasonList(a), offer: null }
   }
 
+  // A switch for the money has to pay for its re-cache, or the band would offer one on every prompt of a long session.
+  // A stronger model or effort is about the work going right, so it is offered whatever the re-cache costs.
+  const isStepUp = advice.kind === 'stronger' || MODEL_RANK[advice.rec.model] > MODEL_RANK[current.model]
+  if (!isStepUp && !advice.isWorthIt && contextTokens > 0) {
+    const saving =
+      advice.costNow === null
+        ? 'and without the current effort the saving cannot be priced'
+        : `more than a turn like this would save (≈${money(Math.max(0, advice.costNow - advice.costRec))})`
+
+    return {
+      tone: 'fits',
+      head: `✓ Staying on ${now} · a switch costs more than this ${tier.toLowerCase()} prompt saves`,
+      detail: `${rec} would do it, but switching re-caches ${kTokens(contextTokens)} tokens (≈${money(advice.switch)}), ${saving}`,
+      offer: null,
+    }
+  }
+
   const costs =
     advice.costNow === null
       ? `a turn like this ≈${money(advice.costRec)} on ${rec}`
@@ -83,7 +100,7 @@ export function verdict(a: Assessment, current: Current | null, contextTokens: n
   if (advice.kind === 'cheaper') {
     const head = `${tier}: ${rec} would do · you're on ${now}`
 
-    return { tone: 'save', head, detail: advice.isWorthIt || contextTokens === 0 ? detail : `${detail} · only worth it if you stay on it`, offer: a.setup }
+    return { tone: 'save', head, detail, offer: a.setup }
   }
   if (advice.kind === 'stronger') {
     return { tone: 'warn', head: `${tier}: ${rec} would be safer than ${now}`, detail, offer: a.setup }
