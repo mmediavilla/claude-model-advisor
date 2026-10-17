@@ -3,6 +3,7 @@
 A Claude Code plugin that reads each prompt you send (free regex heuristics, no model call) and suggests the model and effort that would do it, so you stop paying Opus at high effort for a commit message.
 
 - Shows a band above the prompt and a `/advise` command.
+- Offers a switch only when it is worth the re-cache: a cheaper setup must save more than the re-cache costs, and a stronger one must cost no more than a quarter of the turn to re-cache.
 - `mode` option: `suggest` (default), `auto`, or `off`.
 - Mid-turn check: flags long-running turns that may need a stronger or cheaper setup (suggest-only).
 - Reads each prompt in light of the session:

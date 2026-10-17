@@ -2,6 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { LastTurn } from '../types'
 import { advise, assess, idFor, longRunLimit, midway, modelKeyOf, struggleOf, switchCost } from './assess'
+import { verdict } from './words'
 
 const tierOf = (text: string) => assess(text, null).tier
 
@@ -112,6 +113,22 @@ describe('comparing with what would be sent', () => {
     if (advice.kind === 'fits') return
     expect(advice.costNow).toBeNull()
     expect(advice.isWorthIt).toBe(false)
+  })
+
+  test('a step up in effort is worth its re-cache on a small context, not on a big one', () => {
+    const a = assess('refactor the billing service', null)
+    expect(a.tier).toBe('involved')
+    const small = advise(a, { model: 'opus', effort: 'medium' }, 20_000)
+    const big = advise(a, { model: 'opus', effort: 'medium' }, 200_000)
+    if (small.kind === 'fits' || big.kind === 'fits') throw new Error('expected a step up')
+    expect(small.isStepUp && big.isStepUp).toBe(true)
+    expect(small.isWorthIt).toBe(true)
+    expect(big.isWorthIt).toBe(false)
+
+    const v = verdict(a, { model: 'opus', effort: 'medium' }, 200_000)
+    expect(v.offer).toBeNull()
+    expect(v.head).toBe('✓ Staying on Opus 5.5 · medium · a switch costs too much next to this involved prompt')
+    expect(v.detail).toMatch(/^Opus 5\.5 · high may do it better, but switching re-caches 200k tokens \(≈\$0\.96\), over a quarter of a turn like this on it/)
   })
 
   test('the re-cache grows with the conversation', () => {

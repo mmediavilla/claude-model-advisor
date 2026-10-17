@@ -313,12 +313,26 @@ export type Current = { model: ModelKey; effort: Effort | null }
 
 export type Advice =
   | { kind: 'fits' }
-  | { kind: 'cheaper' | 'stronger' | 'different'; rec: Setup; costNow: number | null; costRec: number; switch: number; isWorthIt: boolean }
+  | {
+      kind: 'cheaper' | 'stronger' | 'different'
+      rec: Setup
+      costNow: number | null
+      costRec: number
+      switch: number
+      /** A stronger model or effort, bought for the work going right rather than for a saving. */
+      isStepUp: boolean
+      isWorthIt: boolean
+    }
+
+/** A step up is worth its re-cache when the re-cache is no more than this share of the turn it is for. */
+export const STEP_UP_SHARE = 0.25
 
 /**
  * Compares a prompt's setup with what would be sent. Cheaper means no step up
  * in either model or effort; stronger, no step down in either; different, one
  * of each (Sonnet at high against Opus at low), which is a judgement, not a saving.
+ * A switch for the money is worth it when the turn saves more than the
+ * re-cache costs; a step up, when the re-cache is small next to the turn.
  */
 export function advise(a: Assessment, current: Current, contextTokens: number): Advice {
   const rec = a.setup
@@ -330,9 +344,10 @@ export function advise(a: Assessment, current: Current, contextTokens: number): 
   const costNow = current.effort === null ? null : turnCost({ model: current.model, effort: current.effort }, a.tier, contextTokens)
   const costRec = turnCost(rec, a.tier, contextTokens)
   const cost = switchCost(rec, contextTokens)
-  const isWorthIt = costNow !== null && costNow - costRec > cost
+  const isStepUp = kind === 'stronger' || dm > 0
+  const isWorthIt = isStepUp ? cost <= costRec * STEP_UP_SHARE : costNow !== null && costNow - costRec > cost
 
-  return { kind, rec, costNow, costRec, switch: cost, isWorthIt }
+  return { kind, rec, costNow, costRec, switch: cost, isStepUp, isWorthIt }
 }
 
 const TIER_ORDER: readonly Tier[] = ['trivial', 'light', 'standard', 'involved', 'deep']

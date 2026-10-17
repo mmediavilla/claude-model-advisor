@@ -72,6 +72,30 @@ export function verdict(a: Assessment, current: Current | null, contextTokens: n
     return { tone: 'fits', head: `✓ ${now} fits this ${tier.toLowerCase()} prompt`, detail: reasonList(a), offer: null }
   }
 
+  // A switch has to be worth its re-cache, or the band would offer one on every prompt of a long session.
+  if (!advice.isWorthIt && contextTokens > 0) {
+    const recache = `switching re-caches ${kTokens(contextTokens)} tokens (≈${money(advice.switch)})`
+    if (advice.isStepUp) {
+      return {
+        tone: 'fits',
+        head: `✓ Staying on ${now} · a switch costs too much next to this ${tier.toLowerCase()} prompt`,
+        detail: `${rec} may do it better, but ${recache}, over a quarter of a turn like this on it (≈${money(advice.costRec)})`,
+        offer: null,
+      }
+    }
+    const saving =
+      advice.costNow === null
+        ? 'and without the current effort the saving cannot be priced'
+        : `more than a turn like this would save (≈${money(Math.max(0, advice.costNow - advice.costRec))})`
+
+    return {
+      tone: 'fits',
+      head: `✓ Staying on ${now} · a switch costs more than this ${tier.toLowerCase()} prompt saves`,
+      detail: `${rec} would do it, but ${recache}, ${saving}`,
+      offer: null,
+    }
+  }
+
   const costs =
     advice.costNow === null
       ? `a turn like this ≈${money(advice.costRec)} on ${rec}`
@@ -83,7 +107,7 @@ export function verdict(a: Assessment, current: Current | null, contextTokens: n
   if (advice.kind === 'cheaper') {
     const head = `${tier}: ${rec} would do · you're on ${now}`
 
-    return { tone: 'save', head, detail: advice.isWorthIt || contextTokens === 0 ? detail : `${detail} · only worth it if you stay on it`, offer: a.setup }
+    return { tone: 'save', head, detail, offer: a.setup }
   }
   if (advice.kind === 'stronger') {
     return { tone: 'warn', head: `${tier}: ${rec} would be safer than ${now}`, detail, offer: a.setup }

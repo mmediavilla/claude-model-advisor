@@ -114,6 +114,28 @@ describe('suggest', () => {
     }
   })
 
+  test('on a big context a cheaper setup that does not pay for its re-cache is not offered, and /advise says why', async ($, on) => {
+    engine(on, 200_000)
+    await step($)
+    await submit($, 'fix the typo in README.md')
+
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect(await ui.find({ type: 'Text', text: /✓ Staying on Opus 5\.5 · xhigh · a switch costs more than this light prompt saves/ })).toBeDefined()
+    expect(await ui.find({ key: 'use' })).toBeUndefined()
+    expect(await ui.find({ key: 'hide' })).toBeUndefined()
+    expect((await advise($)).text).toMatch(/Sonnet 5\.5 · low would do it, but switching re-caches 200k tokens \(≈\$0\.46\), more than a turn like this would save/)
+  })
+
+  test('on a big context a stronger model is still offered when the re-cache is small next to the turn', async ($, on) => {
+    engine(on, 200_000)
+    await step($)
+    await submit($, 'ultrathink: there is a race condition in the ledger that only happens in production, find the root cause')
+
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect(await ui.find({ type: 'Text', text: /Fable 5\.1 · high suits this better than Opus 5\.5 · xhigh/ })).toBeDefined()
+    expect(await ui.find({ key: 'use' })).toBeDefined()
+  })
+
   test('Hide puts the band away until the next prompt', async ($, on) => {
     engine(on)
     await step($)
