@@ -10,8 +10,13 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 100, scroll: { offset: 0, bodyRows: 10 }, view: {} },
 } as const
 
-/** Stands in for the engine beneath the plugin: answers the prompt, the status line and each request. */
-function engine(on: On, contextTokens = 20_000): Sent[] {
+/**
+ * Stands in for the engine beneath the plugin: answers the prompt, the status
+ * line and each request. A request on Fable gets no response unless
+ * `fableAnswers`, as for an account without usage credits; each response
+ * consults the advisor `advisorCalls` times.
+ */
+function engine(on: On, contextTokens = 20_000, { fableAnswers = true, advisorCalls = 0 } = {}): Sent[] {
   const sent: Sent[] = []
   on('prompt.submit', ($, e) => ({ text: e.text }))
   on('ui.status', () => ({ value: undefined }))
@@ -24,8 +29,11 @@ function engine(on: On, contextTokens = 20_000): Sent[] {
   })
   on('turn.step', async function* ($, e) {
     sent.push({ model: e.model, effort: e.effort })
+    if (!fableAnswers && /fable/.test(e.model)) return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: null, usage: null }
+    const serverToolUses = Array.from({ length: advisorCalls }, (_, i) => ({ id: `adv-${i}`, name: 'advisor', input: {}, startedAt: 0, endedAt: 1 }))
 
     return {
+      ...(advisorCalls > 0 ? { serverToolUses } : {}),
       turnId: e.turnId,
       index: e.index,
       answer: '',
@@ -44,8 +52,8 @@ function engine(on: On, contextTokens = 20_000): Sent[] {
   return sent
 }
 
-async function step($: Engine, agentId?: string) {
-  const stream = $.turn.step({ turnId: 't', index: 0, model: 'claude-opus-5-5', effort: 'xhigh', messageCount: 1, ...(agentId ? { agentId } : {}) })
+async function step($: Engine, agentId?: string, model = 'claude-opus-5-5', effort: TurnStepInput['effort'] = 'xhigh') {
+  const stream = $.turn.step({ turnId: 't', index: 0, model, effort, messageCount: 1, ...(agentId ? { agentId } : {}) })
   for await (const _ of stream) {
     // drain
   }
@@ -126,7 +134,7 @@ describe('suggest', () => {
     expect((await advise($)).text).toMatch(/Sonnet 5\.5 · low would do it, but switching re-caches 200k tokens \(≈\$0\.46\), more than a turn like this would save/)
   })
 
-  test('on a big context a stronger model is still offered when the re-cache is small next to the turn', async ($, on) => {
+  test('on a big context a stronger model is still offered when the re-cache is small next to the turn', { options: { fable: 'yes' } }, async ($, on) => {
     engine(on, 200_000)
     await step($)
     await submit($, 'ultrathink: there is a race condition in the ledger that only happens in production, find the root cause')
@@ -201,7 +209,7 @@ describe('auto', () => {
     expect(sent.at(-1)).toEqual({ model: 'claude-opus-5-5', effort: 'xhigh' })
   })
 
-  test('never undoes a choice you made', { options: { mode: 'auto' } }, async ($, on) => {
+  test('never undoes a choice you made', { options: { mode: 'auto', fable: 'yes' } }, async ($, on) => {
     const sent = engine(on)
     await step($)
     await submit($, 'there is a race condition in the queue worker, find the root cause')
@@ -345,6 +353,8 @@ describe('the prompt log', () => {
         ended: 'answer',
         didRunLong: false,
         wasHidden: false,
+        advisor: null,
+        advisorCalls: 0,
       },
     ])
   })
@@ -477,6 +487,157 @@ describe('the prompt log', () => {
 
     expect(sent).toHaveLength(2)
     expect(await (await $.ui.mount({ ...BAND, surface: 'terminal' })).find({ type: 'Text', text: /Sonnet 5\.5 · low would do/ })).toBeDefined()
+  })
+})
+
+describe('Fable needs usage credits', () => {
+  const DEEP = 'ultrathink: there is a race condition in the ledger that only happens in production, find the root cause'
+  const crash = ($: Engine, reason: 'error' | 'aborted') =>
+    $.turn.complete({ turnId: 't', answer: '', durationMs: 1, isAborted: reason === 'aborted', reason })
+  function toasts(on: On): string[] {
+    const said: string[] = []
+    on('ui.toast', ($, e) => {
+      said.push(e.text)
+
+      return { value: undefined }
+    })
+
+    return said
+  }
+
+  test('under check, a deep prompt on Sonnet is offered Opus at xhigh, not Fable, and the band says why', async ($, on) => {
+    mock.store(on)
+    engine(on)
+    await step($, undefined, 'claude-sonnet-5-5', 'medium')
+    await submit($, DEEP)
+
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect(await ui.find({ type: 'Text', text: /Deep: Opus 5\.5 · xhigh would be safer than Sonnet 5\.5 · medium/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Fable 5\.1 may do better, but needs usage credits/ })).toBeDefined()
+    expect((await advise($, 'use')).text).toBe('Sending as Opus 5.5 · xhigh until /advise reset.')
+  })
+
+  test('a Fable request that gets no answer drops Fable, goes back to the session setup, and is remembered', { options: { fable: 'yes' } }, async ($, on) => {
+    mock.store(on)
+    mock.clock(on, { now: 5 })
+    const said = toasts(on)
+    const sent = engine(on, 20_000, { fableAnswers: false })
+    await step($)
+    await submit($, DEEP)
+    await (await $.ui.mount({ ...BAND, surface: 'terminal' })).press({ key: 'use' })
+    await step($)
+    expect(sent.at(-1)).toEqual({ model: 'claude-fable-5-1', effort: 'high' })
+    await crash($, 'error')
+
+    expect(said).toEqual(['Fable 5.1 did not answer, most likely for lack of usage credits. Back to Opus 5.5 · xhigh. /advise fable yes if you have them.'])
+    await step($)
+    expect(sent.at(-1)).toEqual({ model: 'claude-opus-5-5', effort: 'xhigh' })
+  })
+
+  test('under check, a failure overrules your own yes, and Fable is no longer offered', async ($, on) => {
+    mock.store(on)
+    mock.clock(on, { now: 7 })
+    toasts(on)
+    const sent = engine(on, 20_000, { fableAnswers: false })
+    await step($, undefined, 'claude-sonnet-5-5', 'medium')
+    await advise($, 'fable yes')
+    await submit($, DEEP)
+    expect((await advise($, 'use')).text).toBe('Sending as Fable 5.1 · high until /advise reset.')
+    await step($, undefined, 'claude-sonnet-5-5', 'medium')
+    await crash($, 'error')
+
+    expect((await advise($, 'fable')).text).toBe('Fable 5.1: not offered. A request on it got no answer. /advise fable yes to try it again.')
+    await step($, undefined, 'claude-sonnet-5-5', 'medium')
+    expect(sent.at(-1)).toEqual({ model: 'claude-sonnet-5-5', effort: 'medium' })
+    expect(await (await $.ui.mount({ ...BAND, surface: 'terminal' })).find({ type: 'Text', text: /Deep: Opus 5\.5 · xhigh would be safer/ })).toBeDefined()
+  })
+
+  test('an interrupt on a Fable request says nothing about credits', { options: { fable: 'yes' } }, async ($, on) => {
+    mock.store(on)
+    const said = toasts(on)
+    const sent = engine(on, 20_000, { fableAnswers: false })
+    await step($)
+    await submit($, DEEP)
+    await advise($, 'use')
+    await step($)
+    await crash($, 'aborted')
+
+    expect(said).toEqual([])
+    await step($)
+    expect(sent.at(-1)).toEqual({ model: 'claude-fable-5-1', effort: 'high' })
+  })
+
+  test('under check, after Fable failed it is no longer offered, and /advise fable yes brings it back', async ($, on) => {
+    mock.store(on, { fable: { works: false, by: 'seen', at: 1 } })
+    mock.clock(on, { now: 9 })
+    engine(on)
+    await step($, undefined, 'claude-sonnet-5-5', 'medium')
+    await submit($, DEEP)
+    expect((await advise($, 'fable')).text).toBe('Fable 5.1: not offered. A request on it got no answer. /advise fable yes to try it again.')
+
+    expect((await advise($, 'fable yes')).text).toBe('Fable 5.1: offered, as you said. /advise fable check to go back to checking.')
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect(await ui.find({ type: 'Text', text: /Deep: Fable 5\.1 · high would be safer than Sonnet 5\.5 · medium/ })).toBeDefined()
+
+    expect((await advise($, 'fable check')).text).toBe('Fable 5.1: not offered until it is seen to answer, since it needs usage credits. /advise fable yes if you have them.')
+  })
+
+  test('a session already on Fable has it, and a request on it that answers is remembered', async ($, on) => {
+    mock.store(on)
+    mock.clock(on, { now: 3 })
+    engine(on)
+    await step($, undefined, 'claude-fable-5-1', 'high')
+    expect((await advise($, 'fable')).text).toBe('Fable 5.1: offered. A request on it answered.')
+    await step($)
+    expect((await advise($, 'fable')).text).toBe('Fable 5.1: offered. A request on it answered.')
+  })
+
+  test('the fable setting no never offers it', { options: { fable: 'no' } }, async ($, on) => {
+    mock.store(on)
+    engine(on)
+    await step($)
+    await submit($, DEEP)
+    expect(await (await $.ui.mount({ ...BAND, surface: 'terminal' })).find({ type: 'Text', text: /Fable 5\.1 · high/ })).toBeUndefined()
+    expect((await advise($, 'fable')).text).toBe('Fable 5.1: never offered, by the fable setting. Change it in /plugin configure model-advisor@mmediavilla.')
+  })
+})
+
+describe('the advisor', () => {
+  test('an advisor as strong as the step up keeps the session setup, and /advise names it and counts its calls', async ($, on) => {
+    mock.store(on)
+    on('settings.read', () => ({ value: { advisorModel: 'opus' } }))
+    engine(on, 20_000, { advisorCalls: 2 })
+    await step($, undefined, 'claude-sonnet-5-5', 'medium')
+    await submit($, 'refactor the billing service')
+
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    expect(await ui.find({ type: 'Text', text: /✓ Sonnet 5\.5 · medium fits · the Opus advisor covers the hard calls of this involved prompt/ })).toBeDefined()
+    expect(await ui.find({ key: 'use' })).toBeUndefined()
+
+    await step($, undefined, 'claude-sonnet-5-5', 'medium')
+    await finish($)
+    const text = (await advise($)).text
+    expect(text).toContain('Advisor: Opus.')
+    expect(text).toContain('Last turn: 1 request, 0 tool errors, 2 advisor calls.')
+  })
+
+  test('/advise says when the main model outranks the advisor, which Claude Code then leaves off', async ($, on) => {
+    mock.store(on)
+    on('settings.read', () => ({ value: { advisorModel: 'sonnet' } }))
+    engine(on)
+    await step($)
+    await submit($, 'refactor the billing service')
+    expect((await advise($)).text).toContain('Advisor: Sonnet, off while the main model is Opus 5.5, which it ranks below.')
+  })
+
+  test('CLAUDE_CODE_DISABLE_ADVISOR_TOOL turns the advisor off', async ($, on) => {
+    mock.store(on)
+    mock.env(on, { CLAUDE_CODE_DISABLE_ADVISOR_TOOL: '1' })
+    on('settings.read', () => ({ value: { advisorModel: 'opus' } }))
+    engine(on)
+    await step($)
+    await submit($, 'refactor the billing service')
+    expect((await advise($)).text).not.toContain('Advisor:')
   })
 })
 

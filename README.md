@@ -5,6 +5,14 @@ A Claude Code plugin that reads each prompt you send (free regex heuristics, no 
 - Shows a band above the prompt and a `/advise` command.
 - Offers a switch only when it is worth the re-cache: a cheaper setup must save more than the re-cache costs, and a stronger one must cost no more than a quarter of the turn to re-cache.
 - `mode` option: `suggest` (default), `auto`, or `off`.
+- Knows Fable needs usage credits (`fable` option, see Settings):
+  - By default, Fable is offered only once a request on it has answered, or the session already runs on it. Until then a deep prompt is offered Opus at xhigh.
+  - If a request the advisor sent on Fable fails, it goes back to your setup and stops offering Fable.
+  - `/advise fable` says where it stands. `/advise fable yes`, `no` or `check` changes it for every session.
+- Works with Claude Code's advisor (`/advisor`):
+  - When the advisor is as strong as the model a prompt needs, the band keeps your setup and says the advisor covers the hard calls.
+  - When a switch would move the main model above the advisor, the band warns that it turns the advisor off.
+  - `/advise` names the advisor and counts its calls in the last turn.
 - Mid-turn check: flags long-running turns that may need a stronger or cheaper setup (suggest-only).
 - Reads each prompt in light of the session:
   - A short prompt that points back at the last one ("add a test for it") is read no more than one tier below it.
@@ -42,8 +50,14 @@ Then restart Claude Code.
 Set them in `/plugin configure model-advisor@mmediavilla`, or from a shell:
 
 ```
-echo '{"mode":"auto","log":"on"}' | claude plugin configure model-advisor@mmediavilla --values-stdin
+echo '{"mode":"auto","log":"on","fable":"check"}' | claude plugin configure model-advisor@mmediavilla --values-stdin
 ```
+
+| Setting | Values | What it does |
+| --- | --- | --- |
+| `mode` | `suggest` (default), `auto`, `off` | `auto` also sends a prompt on a cheaper setup when the advisor is sure and the switch pays for itself. It never moves you to a stronger model. |
+| `log` | `off` (default), `on` | Keeps your newest 400 prompts for calibration. |
+| `fable` | `check` (default), `yes`, `no` | Fable bills to usage credits. `check` offers it only once it has been seen to answer. `yes` always offers it. `no` never does. |
 
 Tune the heuristics in `model-advisor/hooks/assess.ts` (`SIGNALS`, `tierOf`) and add cases to `assess.test.ts`.
 

@@ -2,6 +2,14 @@ export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 export type ModelKey = 'haiku' | 'sonnet' | 'opus' | 'fable'
 export type Tier = 'trivial' | 'light' | 'standard' | 'involved' | 'deep'
 export type Mode = 'suggest' | 'auto' | 'off'
+/** check: Fable counts once it has been seen to answer; yes and no settle it. */
+export type FableOption = 'check' | 'yes' | 'no'
+
+/** Whether Fable answers on this account, as you said or as a request showed; kept across sessions. */
+export type FableKnown = { works: boolean; by: 'you' | 'seen'; at: number }
+
+/** What the advisor can reach: Fable, and the advisor model Claude Code attaches to the main model's requests. */
+export type Reach = { fable: boolean; advisor: ModelKey | null }
 
 /** A model and an effort, as the advisor names them. */
 export type Setup = { model: ModelKey; effort: Effort }
@@ -32,6 +40,8 @@ export type LastTurn = {
   toolErrors: number
   contextTokens: number
   ended: 'answer' | 'aborted' | 'refusal' | 'error'
+  /** Times the main model consulted the advisor; absent before 0.4.0. */
+  advisorCalls?: number
 }
 
 /** A prompt as read when it was sent, waiting for its turn to end before it is logged. */
@@ -69,6 +79,10 @@ export type LogEntry = PendingEntry & {
   didRunLong: boolean
   /** The band was hidden when the turn ended. */
   wasHidden: boolean
+  /** The advisor model set when the turn ended; absent before 0.4.0. */
+  advisor?: ModelKey | null
+  /** Times the main model consulted the advisor; absent before 0.4.0. */
+  advisorCalls?: number
 }
 
 declare module 'claude-code' {
@@ -86,12 +100,14 @@ declare module 'claude-code' {
       /** This session's mode, when /advise changed it from the configured one. */
       mode: Mode | null
       isHidden: boolean
-      /** Main-loop requests and tool errors so far in the current turn. */
-      run: { turnId: string | null; steps: number; toolErrors: number }
+      /** Main-loop requests, tool errors and advisor calls so far in the current turn, and whether a request sent on Fable got no answer. */
+      run: { turnId: string | null; steps: number; toolErrors: number; advisorCalls?: number; fableFailed?: boolean }
       /** How the last turn went, so the next prompt is read in its light. */
       lastTurn: LastTurn | null
       /** The prompt whose turn is running, logged when it ends. */
       pending: PendingEntry | null
+      /** Whether Fable is in reach and which advisor is attached, read from the settings and from what Fable requests did. */
+      reach: Reach
     }
   }
 }
