@@ -1,6 +1,6 @@
 {
   "name": "model-advisor",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Reads each prompt you send and says which model and effort would do it, so you stop paying Opus at xhigh for a commit message.",
   "author": {
     "name": "MC Mediavilla"
@@ -35,6 +35,17 @@
       "options": [
         "on",
         "off"
+      ]
+    },
+    "fable": {
+      "type": "string",
+      "title": "Fable",
+      "description": "Fable bills to usage credits. check (the default): offer it only once a request on it has answered or the session runs on it, and stop if one fails. yes: always offer it. no: never offer it; deep prompts get Opus at xhigh.",
+      "default": "check",
+      "options": [
+        "check",
+        "yes",
+        "no"
       ]
     }
   }

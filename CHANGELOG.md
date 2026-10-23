@@ -2,6 +2,27 @@
 
 All notable changes to model-advisor. Versions follow [Semantic Versioning](https://semver.org). Below 1.0, a minor version may change how prompts are read or what the log keeps.
 
+## [0.4.0] - 2026-10-23
+
+### Added
+
+- Fable awareness. Fable bills to usage credits, so a new `fable` setting decides when it is offered:
+  - `check` (the default): offered only once a request on it has answered, or the session already runs on it. Until then a deep prompt is offered Opus at xhigh, and the band says Fable needs usage credits.
+  - `yes`: always offered. `no`: never offered.
+  - Your organization's `availableModels` list is respected.
+- A safety net for Fable. When a request the advisor sent on Fable gets no answer and the turn ends in an error, the advisor drops Fable, goes back to the session's own setup, says so, and stops offering Fable. An interrupt does not count.
+- `/advise fable` says whether Fable is offered and why. `/advise fable yes` and `/advise fable no` set it for every session. `/advise fable check` goes back to checking.
+- Advisor awareness. The plugin reads `advisorModel` from your settings (`/advisor`):
+  - When the advisor is at least as strong as the model a step up would buy, the band stays on your setup and says the advisor covers the hard calls. No switch, no re-cache.
+  - When a switch would move the main model above the advisor, the band says the switch turns the advisor off. Claude Code drops it without a word.
+  - A long run is not offered a model the advisor already brings in.
+  - `/advise` names the advisor, says when it is off because it ranks below the main model, and counts its calls in the last turn.
+  - The log keeps the advisor and its calls for each prompt.
+
+### Changed
+
+- Fable is no longer offered by default. Set `fable` to `yes`, or run `/advise fable yes`, if you have usage credits.
+
 ## [0.3.0] - 2026-10-17
 
 ### Changed

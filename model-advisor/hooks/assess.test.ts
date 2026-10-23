@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import type { LastTurn } from '../types'
-import { advise, assess, idFor, longRunLimit, midway, modelKeyOf, struggleOf, switchCost } from './assess'
+import type { LastTurn, Reach } from '../types'
+import { advise, assess, idFor, longRunLimit, midway, modelKeyOf, reachOf, struggleOf, switchCost } from './assess'
 import { verdict } from './words'
 
 const tierOf = (text: string) => assess(text, null).tier
@@ -98,7 +98,7 @@ describe('comparing with what would be sent', () => {
   test('a light prompt on Opus at xhigh is cheaper on Sonnet at low, and worth the switch on a small context', () => {
     const advice = advise(assess('fix the typo in README.md', null), { model: 'opus', effort: 'xhigh' }, 20_000)
     expect(advice.kind).toBe('cheaper')
-    if (advice.kind === 'fits') return
+    if (advice.kind === 'fits' || advice.kind === 'covered') return
     expect(advice.isWorthIt).toBe(true)
   })
 
@@ -110,7 +110,7 @@ describe('comparing with what would be sent', () => {
   test('an unknown effort compares on the model alone, and claims no saving', () => {
     const advice = advise(assess('fix the typo in README.md', null), { model: 'opus', effort: null }, 20_000)
     expect(advice.kind).toBe('cheaper')
-    if (advice.kind === 'fits') return
+    if (advice.kind === 'fits' || advice.kind === 'covered') return
     expect(advice.costNow).toBeNull()
     expect(advice.isWorthIt).toBe(false)
   })
@@ -120,7 +120,7 @@ describe('comparing with what would be sent', () => {
     expect(a.tier).toBe('involved')
     const small = advise(a, { model: 'opus', effort: 'medium' }, 20_000)
     const big = advise(a, { model: 'opus', effort: 'medium' }, 200_000)
-    if (small.kind === 'fits' || big.kind === 'fits') throw new Error('expected a step up')
+    if (small.kind === 'fits' || small.kind === 'covered' || big.kind === 'fits' || big.kind === 'covered') throw new Error('expected a step up')
     expect(small.isStepUp && big.isStepUp).toBe(true)
     expect(small.isWorthIt).toBe(true)
     expect(big.isWorthIt).toBe(false)
@@ -133,6 +133,91 @@ describe('comparing with what would be sent', () => {
 
   test('the re-cache grows with the conversation', () => {
     expect(switchCost({ model: 'sonnet', effort: 'low' }, 200_000)).toBeGreaterThan(switchCost({ model: 'sonnet', effort: 'low' }, 20_000))
+  })
+})
+
+describe('Fable and the advisor', () => {
+  const deep = assess('ultrathink: there is a race condition in the ledger that only happens in production, find the root cause', null)
+  const involved = assess('refactor the billing service', null)
+  const opus = { model: 'opus', effort: 'high' } as const
+  const noFable: Reach = { fable: false, advisor: null }
+  const check = { option: 'check', known: null, own: 'opus', advisorModel: undefined, availableModels: undefined, isAdvisorOff: false } as const
+
+  test('under check, Fable is in reach only once known to answer, or when the session runs on it', () => {
+    expect(reachOf(check).fable).toBe(false)
+    expect(reachOf({ ...check, own: 'fable' }).fable).toBe(true)
+    expect(reachOf({ ...check, known: { works: true, by: 'seen', at: 1 } }).fable).toBe(true)
+    expect(reachOf({ ...check, own: 'fable', known: { works: false, by: 'seen', at: 1 } }).fable).toBe(false)
+    expect(reachOf({ ...check, option: 'yes' }).fable).toBe(true)
+    expect(reachOf({ ...check, option: 'no', own: 'fable' }).fable).toBe(false)
+  })
+
+  test("an organization's model list that leaves Fable out keeps it out of reach, whatever was said", () => {
+    expect(reachOf({ ...check, option: 'yes', availableModels: ['opus', 'sonnet'] }).fable).toBe(false)
+    expect(reachOf({ ...check, option: 'yes', availableModels: ['opus', 'claude-fable-5-1'] }).fable).toBe(true)
+  })
+
+  test('the advisor is read from the settings, and is off where Claude Code would not apply it', () => {
+    expect(reachOf({ ...check, advisorModel: 'opus' }).advisor).toBe('opus')
+    expect(reachOf({ ...check, advisorModel: 'claude-sonnet-5-5' }).advisor).toBe('sonnet')
+    expect(reachOf({ ...check, advisorModel: 'fable' }).advisor).toBeNull()
+    expect(reachOf({ ...check, advisorModel: 'fable', option: 'yes' }).advisor).toBe('fable')
+    expect(reachOf({ ...check, advisorModel: 'opus', isAdvisorOff: true }).advisor).toBeNull()
+    expect(reachOf({ ...check, advisorModel: 'opus', availableModels: ['sonnet'] }).advisor).toBeNull()
+  })
+
+  test('without Fable a deep prompt is offered Opus at xhigh, and the band says Fable needs credits', () => {
+    const advice = advise(deep, { model: 'sonnet', effort: 'medium' }, 20_000, noFable)
+    expect(advice.kind).toBe('stronger')
+    if (advice.kind === 'fits') return
+    expect(advice.rec).toEqual({ model: 'opus', effort: 'xhigh' })
+
+    const v = verdict(deep, { model: 'sonnet', effort: 'medium' }, 20_000, noFable)
+    expect(v.offer).toEqual({ model: 'opus', effort: 'xhigh' })
+    expect(v.head).toBe('Deep: Opus 5.5 · xhigh would be safer than Sonnet 5.5 · medium')
+    expect(v.detail).toContain('Fable 5.1 may do better, but needs usage credits: /advise fable yes if you have them')
+  })
+
+  test('without Fable a deep prompt on Opus at xhigh fits, and still says Fable needs credits', () => {
+    const v = verdict(deep, { model: 'opus', effort: 'xhigh' }, 20_000, noFable)
+    expect(v.tone).toBe('fits')
+    expect(v.offer).toBeNull()
+    expect(v.detail).toContain('needs usage credits')
+  })
+
+  test('an advisor at least as strong as the step up covers it: no switch is offered', () => {
+    const fableAdvisor: Reach = { fable: true, advisor: 'fable' }
+    const advice = advise(deep, opus, 20_000, fableAdvisor)
+    expect(advice).toEqual({ kind: 'covered', rec: { model: 'fable', effort: 'high' }, advisor: 'fable' })
+
+    const v = verdict(deep, opus, 20_000, fableAdvisor)
+    expect(v.tone).toBe('fits')
+    expect(v.offer).toBeNull()
+    expect(v.head).toBe('✓ Opus 5.5 · high fits · the Fable advisor covers the hard calls of this deep prompt')
+
+    expect(advise(involved, { model: 'sonnet', effort: 'medium' }, 20_000, { fable: false, advisor: 'opus' }).kind).toBe('covered')
+  })
+
+  test('an advisor weaker than the step up covers nothing, and the band says the switch turns it off', () => {
+    const opusAdvisor: Reach = { fable: true, advisor: 'opus' }
+    const advice = advise(deep, { model: 'sonnet', effort: 'high' }, 20_000, opusAdvisor)
+    expect(advice.kind).toBe('stronger')
+    if (advice.kind === 'fits' || advice.kind === 'covered') return
+    expect(advice.dropsAdvisor).toBe('opus')
+    expect(verdict(deep, { model: 'sonnet', effort: 'high' }, 20_000, opusAdvisor).detail).toContain('Fable 5.1 turns the Opus advisor off')
+  })
+
+  test('a cheaper setup keeps the advisor', () => {
+    const light = assess('fix the typo in README.md', null)
+    const advice = advise(light, { model: 'opus', effort: 'xhigh' }, 20_000, { fable: false, advisor: 'opus' })
+    if (advice.kind === 'fits' || advice.kind === 'covered') throw new Error('expected cheaper')
+    expect(advice.dropsAdvisor).toBeNull()
+  })
+
+  test('a long run is not offered a model the advisor already brings in', () => {
+    const standard = assess('add a dark mode toggle to the settings page', null)
+    expect(midway(standard, { model: 'sonnet', effort: 'medium' }, 18, 20_000, { fable: false, advisor: 'opus' })?.kind).not.toBe('stronger')
+    expect(midway(involved, opus, 45, 20_000, noFable)).toBeNull()
   })
 })
 

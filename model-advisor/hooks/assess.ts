@@ -2,7 +2,7 @@
 // asked: a judge that spends tokens on every prompt to save tokens is the
 // wrong way round, and a regex can run on every keystroke.
 
-import type { Assessment, Effort, LastTurn, ModelKey, Setup, Tier } from '../types'
+import type { Assessment, Effort, FableKnown, FableOption, LastTurn, ModelKey, Reach, Setup, Tier } from '../types'
 
 /**
  * List prices per million tokens (the Claude API skill's table, 2026-10-06).
@@ -25,6 +25,73 @@ export const RECOMMENDED: Record<Tier, Setup> = {
   standard: { model: 'sonnet', effort: 'medium' },
   involved: { model: 'opus', effort: 'high' },
   deep: { model: 'fable', effort: 'high' },
+}
+
+/** What a deep prompt is offered when Fable is out of reach: the strongest setup short of it. */
+export const SHORT_OF_FABLE: Setup = { model: 'opus', effort: 'xhigh' }
+
+/** Everything in reach and no advisor: how a prompt reads with nothing known about the account. */
+export const FULL_REACH: Reach = { fable: true, advisor: null }
+
+/** The setup to offer for one a prompt calls for: Fable needs usage credits, so without them the strongest short of it. */
+export function reachable(setup: Setup, reach: Reach): Setup {
+  return setup.model === 'fable' && !reach.fable ? SHORT_OF_FABLE : setup
+}
+
+/**
+ * The advisor Claude Code attaches to requests on this main model; null when
+ * none is set or it ranks below the main model, where Claude Code sends the
+ * requests without it.
+ */
+export function advisorFor(main: ModelKey, reach: Reach): ModelKey | null {
+  return reach.advisor !== null && MODEL_RANK[reach.advisor] >= MODEL_RANK[main] ? reach.advisor : null
+}
+
+/** The advisor on this main model is at least as strong as the model a step up would buy. */
+function isCoveredBy(main: ModelKey, to: ModelKey, reach: Reach): ModelKey | null {
+  const advisor = advisorFor(main, reach)
+
+  return advisor !== null && MODEL_RANK[advisor] >= MODEL_RANK[to] ? advisor : null
+}
+
+/** An organization's `availableModels` list allows the family; no list allows every one. */
+function isAllowed(model: ModelKey, availableModels: unknown): boolean {
+  if (!Array.isArray(availableModels) || availableModels.length === 0) return true
+
+  return availableModels.some(m => typeof m === 'string' && modelKeyOf(m) === model)
+}
+
+export type ReachInput = {
+  option: FableOption
+  /** What you said with /advise fable, or what a request on Fable showed; null when nothing is known. */
+  known: FableKnown | null
+  /** The session's own model family; a session already on Fable has it. */
+  own: ModelKey | null
+  /** The settings' `advisorModel` and `availableModels`, as they come. */
+  advisorModel: unknown
+  availableModels: unknown
+  /** CLAUDE_CODE_DISABLE_ADVISOR_TOOL, or a variable that stops Claude Code fetching the flag that turns the advisor on. */
+  isAdvisorOff: boolean
+}
+
+/**
+ * What is in reach. Fable bills to usage credits, so under `check` it counts
+ * only once it is known to answer, or the session already runs on it. Claude
+ * Code applies a Fable advisor only where Fable answers, and no advisor the
+ * organization's model list leaves out.
+ */
+export function reachOf(r: ReachInput): Reach {
+  const said = r.option === 'yes' ? true : r.option === 'no' ? false : (r.known?.works ?? r.own === 'fable')
+  const fable = said && isAllowed('fable', r.availableModels)
+  const named = typeof r.advisorModel === 'string' ? modelKeyOf(r.advisorModel) : null
+  const isApplied = named !== null && !r.isAdvisorOff && (named !== 'fable' || fable) && isAllowed(named, r.availableModels)
+
+  return { fable, advisor: isApplied ? named : null }
+}
+
+/** The family's name alone, for the advisor, whose alias follows Claude Code's default version. */
+export function familyLabel(model: ModelKey): string {
+  return MODELS[model].label.split(' ')[0] ?? model
 }
 
 export const TIER_LABEL: Record<Tier, string> = {
@@ -313,6 +380,8 @@ export type Current = { model: ModelKey; effort: Effort | null }
 
 export type Advice =
   | { kind: 'fits' }
+  /** A stronger model the advisor already brings in at the hard calls, with no switch. */
+  | { kind: 'covered'; rec: Setup; advisor: ModelKey }
   | {
       kind: 'cheaper' | 'stronger' | 'different'
       rec: Setup
@@ -322,6 +391,8 @@ export type Advice =
       /** A stronger model or effort, bought for the work going right rather than for a saving. */
       isStepUp: boolean
       isWorthIt: boolean
+      /** The advisor on now that the setup switched to would lose: it would rank below the new main model. */
+      dropsAdvisor: ModelKey | null
     }
 
 /** A step up is worth its re-cache when the re-cache is no more than this share of the turn it is for. */
@@ -333,12 +404,16 @@ export const STEP_UP_SHARE = 0.25
  * of each (Sonnet at high against Opus at low), which is a judgement, not a saving.
  * A switch for the money is worth it when the turn saves more than the
  * re-cache costs; a step up, when the re-cache is small next to the turn.
+ * Fable out of reach is offered as the strongest setup short of it, and a
+ * stronger model the advisor already brings in is not offered at all.
  */
-export function advise(a: Assessment, current: Current, contextTokens: number): Advice {
-  const rec = a.setup
+export function advise(a: Assessment, current: Current, contextTokens: number, reach: Reach = FULL_REACH): Advice {
+  const rec = reachable(a.setup, reach)
   const dm = MODEL_RANK[rec.model] - MODEL_RANK[current.model]
   const de = current.effort === null ? 0 : EFFORTS.indexOf(rec.effort) - EFFORTS.indexOf(current.effort)
   if (dm === 0 && de === 0) return { kind: 'fits' }
+  const covering = dm > 0 ? isCoveredBy(current.model, rec.model, reach) : null
+  if (covering !== null) return { kind: 'covered', rec, advisor: covering }
 
   const kind = dm <= 0 && de <= 0 ? 'cheaper' : dm >= 0 && de >= 0 ? 'stronger' : 'different'
   const costNow = current.effort === null ? null : turnCost({ model: current.model, effort: current.effort }, a.tier, contextTokens)
@@ -346,8 +421,10 @@ export function advise(a: Assessment, current: Current, contextTokens: number): 
   const cost = switchCost(rec, contextTokens)
   const isStepUp = kind === 'stronger' || dm > 0
   const isWorthIt = isStepUp ? cost <= costRec * STEP_UP_SHARE : costNow !== null && costNow - costRec > cost
+  const advisorNow = advisorFor(current.model, reach)
+  const dropsAdvisor = advisorNow !== null && advisorFor(rec.model, reach) === null ? advisorNow : null
 
-  return { kind, rec, costNow, costRec, switch: cost, isStepUp, isWorthIt }
+  return { kind, rec, costNow, costRec, switch: cost, isStepUp, isWorthIt, dropsAdvisor }
 }
 
 const TIER_ORDER: readonly Tier[] = ['trivial', 'light', 'standard', 'involved', 'deep']
@@ -386,21 +463,21 @@ export type Midway = {
 /**
  * A run that has gone on longer than its prompt promised. Remaining work is
  * guessed as half as many requests again as have been made. A model below the
- * next tier up is offered that tier; otherwise a cheaper setup is offered only
- * if it pays for its re-cache; otherwise a heavy context alone is mentioned.
+ * next tier up is offered that tier, unless the advisor already brings it in;
+ * otherwise a cheaper setup is offered only if it pays for its re-cache;
+ * otherwise a heavy context alone is mentioned.
  */
-export function midway(a: Assessment, current: Current | null, steps: number, contextTokens: number): Midway | null {
+export function midway(a: Assessment, current: Current | null, steps: number, contextTokens: number, reach: Reach = FULL_REACH): Midway | null {
   if (current === null || steps < longRunLimit(a.tier, contextTokens)) return null
   const isHeavy = contextTokens >= HEAVY_CONTEXT
 
   const up = TIER_ORDER[TIER_ORDER.indexOf(a.tier) + 1]
-  if (up !== undefined && MODEL_RANK[current.model] < MODEL_RANK[RECOMMENDED[up].model]) {
-    const rec = RECOMMENDED[up]
-
+  const rec = up === undefined ? null : reachable(RECOMMENDED[up], reach)
+  if (rec !== null && MODEL_RANK[current.model] < MODEL_RANK[rec.model] && isCoveredBy(current.model, rec.model, reach) === null) {
     return { kind: 'stronger', rec, steps, isHeavy, saving: 0, switch: switchCost(rec, contextTokens) }
   }
 
-  const advice = advise(a, current, contextTokens)
+  const advice = advise(a, current, contextTokens, reach)
   if (advice.kind === 'cheaper' && current.effort !== null) {
     const perNow = requestCost({ model: current.model, effort: current.effort }, a.tier, contextTokens)
     const perRec = requestCost(advice.rec, a.tier, contextTokens)
