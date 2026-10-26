@@ -26,7 +26,8 @@ function fableNote(a: Assessment, reach: Reach): string | null {
 /** What the band says while a turn is running long; null when it has not. */
 export function midwayVerdict(m: Midway, a: Assessment, current: Current, contextTokens: number): Verdict {
   const now = setupLabel(current.model, current.effort)
-  const run = `${m.steps} requests in on a ${TIER_LABEL[a.tier].toLowerCase()} prompt, ${kTokens(contextTokens)} context`
+  const tier = TIER_LABEL[a.tier].toLowerCase()
+  const run = `${m.steps} requests in on ${/^[aeiou]/.test(tier) ? 'an' : 'a'} ${tier} prompt, ${kTokens(contextTokens)} context`
 
   if (m.kind === 'stronger' && m.rec) {
     return {
