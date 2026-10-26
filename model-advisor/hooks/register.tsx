@@ -477,39 +477,47 @@ export const register: Register = (on, options) => {
     const below = await next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
 
+    // A row in the terminal or VS Code is a whole line, so only the app and the phones space the text, the buttons and what is below.
+    // A number, not a step name: Claude Code before steps refuses the whole band over one.
+    const space = e.surface === 'desktop' || e.surface === 'mobile' ? 1 : 0
+
     return (
-      <Box flexDirection="column">
-        <Text bold={v.tone !== 'fits'} dimColor={v.tone === 'fits' || v.tone === 'note'} color={tone}>
-          {v.head}
-        </Text>
-        {v.tone !== 'fits' && <Text dimColor>{v.detail}</Text>}
-        {chosen !== null && (
-          <Text dimColor>
-            Sending as {setupLabel(chosen.model, chosen.effort)}
-            {chosen.by === 'auto' ? ' (auto)' : ''}
-            {own === null ? '' : ` in place of ${setupLabel(own.model, own.effort)}`}
-          </Text>
-        )}
-        {(offer !== null || chosen !== null || v.tone !== 'fits') && (
-          <Box flexDirection="row" gap={1}>
-            {offer !== null && (
-              <Button
-                key="use"
-                variant="primary"
-                label={`Use ${setupLabel(offer.model, offer.effort)}`}
-                onPress={() => choose($, offer, 'you')}
-              />
-            )}
+      <Box flexDirection="column" gap={space}>
+        <Box flexDirection="column" gap={space}>
+          <Box flexDirection="column">
+            <Text bold={v.tone !== 'fits'} dimColor={v.tone === 'fits' || v.tone === 'note'} color={tone}>
+              {v.head}
+            </Text>
+            {v.tone !== 'fits' && <Text dimColor>{v.detail}</Text>}
             {chosen !== null && (
-              <Button
-                key="back"
-                label={own === null ? 'Back to the session model' : `Back to ${setupLabel(own.model, own.effort)}`}
-                onPress={() => choose($, null, 'you')}
-              />
+              <Text dimColor>
+                Sending as {setupLabel(chosen.model, chosen.effort)}
+                {chosen.by === 'auto' ? ' (auto)' : ''}
+                {own === null ? '' : ` in place of ${setupLabel(own.model, own.effort)}`}
+              </Text>
             )}
-            {v.tone !== 'fits' && <Button key="hide" label="Hide" onPress={() => update($, isHidden, () => true)} />}
           </Box>
-        )}
+          {(offer !== null || chosen !== null || v.tone !== 'fits') && (
+            <Box flexDirection="row" gap={1}>
+              {offer !== null && (
+                <Button
+                  key="use"
+                  variant="primary"
+                  label={`Use ${setupLabel(offer.model, offer.effort)}`}
+                  onPress={() => choose($, offer, 'you')}
+                />
+              )}
+              {chosen !== null && (
+                <Button
+                  key="back"
+                  label={own === null ? 'Back to the session model' : `Back to ${setupLabel(own.model, own.effort)}`}
+                  onPress={() => choose($, null, 'you')}
+                />
+              )}
+              {v.tone !== 'fits' && <Button key="hide" label="Hide" onPress={() => update($, isHidden, () => true)} />}
+            </Box>
+          )}
+        </Box>
         {below}
       </Box>
     )

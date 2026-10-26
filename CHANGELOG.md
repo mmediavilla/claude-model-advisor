@@ -2,6 +2,13 @@
 
 All notable changes to model-advisor. Versions follow [Semantic Versioning](https://semver.org). Below 1.0, a minor version may change how prompts are read or what the log keeps.
 
+## [0.4.1] - 2026-10-26
+
+### Fixed
+
+- The band above the prompt has room to breathe in the desktop app. Its lines, its buttons and whatever other mods draw under it no longer sit flush against each other. The terminal band stays as compact as before.
+- A long run on an involved prompt now reads "on an involved prompt", not "on a involved prompt".
+
 ## [0.4.0] - 2026-10-23
 
 ### Added

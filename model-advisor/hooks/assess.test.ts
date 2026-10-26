@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { LastTurn, Reach } from '../types'
 import { advise, assess, idFor, longRunLimit, midway, modelKeyOf, reachOf, struggleOf, switchCost } from './assess'
-import { verdict } from './words'
+import { midwayVerdict, verdict } from './words'
 
 const tierOf = (text: string) => assess(text, null).tier
 
@@ -268,6 +268,13 @@ describe('a run that goes long', () => {
 
   test('knows nothing when the session model is unknown', () => {
     expect(midway(light, null, 50, 20_000)).toBeNull()
+  })
+
+  test('names the tier with the right article', () => {
+    const stay = { kind: 'stay', rec: null, steps: 64, isHeavy: true, saving: 0, switch: 0 } as const
+    const sonnet = { model: 'sonnet', effort: 'low' } as const
+    expect(midwayVerdict(stay, assess('refactor the billing service', null), sonnet, 478_000).head).toContain('on an involved prompt')
+    expect(midwayVerdict(stay, light, sonnet, 478_000).head).toContain('on a light prompt')
   })
 })
 
