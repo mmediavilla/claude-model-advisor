@@ -477,11 +477,14 @@ export const register: Register = (on, options) => {
     const below = await next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
 
-    // Steps, not cells: the terminal keeps the rows tight, a graphical surface spaces the lines, the buttons and what is below.
+    // A row in the terminal or VS Code is a whole line, so only the app and the phones space the text, the buttons and what is below.
+    // A number, not a step name: Claude Code before steps refuses the whole band over one.
+    const space = e.surface === 'desktop' || e.surface === 'mobile' ? 1 : 0
+
     return (
-      <Box flexDirection="column" gap="sm">
-        <Box flexDirection="column" gap="sm">
-          <Box flexDirection="column" gap="xs">
+      <Box flexDirection="column" gap={space}>
+        <Box flexDirection="column" gap={space}>
+          <Box flexDirection="column">
             <Text bold={v.tone !== 'fits'} dimColor={v.tone === 'fits' || v.tone === 'note'} color={tone}>
               {v.head}
             </Text>
